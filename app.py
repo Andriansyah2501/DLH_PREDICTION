@@ -624,10 +624,14 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     story.append(Paragraph(rekomendasi_teks, body_style))
 
     doc.build(story)
+    # Hapus file sementara setelah build
+    for f in temp_files:
+        try: os.unlink(f)
+        except: pass
     buffer.seek(0)
     return buffer
 
-# -------------------------- Generate PDF per Kecamatan (TAMBAHAN BARU) --------------------------
+# -------------------------- Generate PDF per Kecamatan (PERBAIKAN) --------------------------
 def generate_pdf_per_kecamatan(kec_data, grafik_dict):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -683,21 +687,31 @@ def generate_pdf_per_kecamatan(kec_data, grafik_dict):
         story.append(t)
     story.append(Spacer(1, 12))
 
+    # --- Grafik (PERBAIKAN: simpan semua file sementara, hapus setelah build) ---
+    temp_files = []
     if 'top_kec' in grafik_dict and grafik_dict['top_kec'] is not None:
         story.append(Paragraph("Visualisasi Armada Teraktif", heading_style))
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
             fig = grafik_dict['top_kec']
             fig.update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
             pio.write_image(fig, tmp.name, format='png', width=500, height=300, scale=2)
+            temp_files.append(tmp.name)
             story.append(Image(tmp.name, width=450, height=250))
             story.append(Spacer(1, 12))
-            os.unlink(tmp.name)
 
     story.append(Paragraph("Rekomendasi", heading_style))
     rekom = f"Berdasarkan data, armada dengan trip rendah perlu dievaluasi. Optimasi rute di kecamatan {kec_name} dapat meningkatkan efisiensi."
     story.append(Paragraph(rekom, normal_style))
 
     doc.build(story)
+
+    # Hapus file sementara setelah PDF selesai dibuat
+    for f in temp_files:
+        try:
+            os.unlink(f)
+        except Exception:
+            pass
+
     buffer.seek(0)
     return buffer
 
