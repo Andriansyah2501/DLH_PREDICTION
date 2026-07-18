@@ -30,7 +30,7 @@ def baca_semua_sheet(uploaded_file):
             pass
     return sheets
 
-# -------------------------- Fungsi Proses Data --------------------------
+# -------------------------- Proses Data --------------------------
 def proses_list_armada(sheets_dict, armada_sheet, config):
     df_arm_raw = sheets_dict[armada_sheet].copy()
     ref_df = None
@@ -200,6 +200,21 @@ def hitung_per_kecamatan(df_master, col_netto):
         return df_kec
     return pd.DataFrame()
 
+def hitung_per_type(df_master, col_netto):
+    """Agregasi per TYPE armada."""
+    if 'TYPE' in df_master.columns and col_netto:
+        df_type = df_master.groupby('TYPE', dropna=False).agg(
+            Total_Ritase=('NOPIN', 'count'),
+            Total_Tonase=(col_netto, 'sum'),
+            Jumlah_Armada=('NOPIN', 'nunique')
+        ).reset_index().sort_values('Total_Ritase', ascending=False)
+        if 'DURASI_MENIT' in df_master.columns:
+            durasi_type = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
+            durasi_type.columns = ['TYPE', 'Rata_Durasi_Menit']
+            df_type = df_type.merge(durasi_type, on='TYPE', how='left')
+        return df_type
+    return pd.DataFrame()
+
 def hitung_tren_harian(df_master, col_netto):
     if col_netto:
         df_tren = df_master.groupby('TANGGAL', dropna=False).agg(
@@ -229,16 +244,12 @@ def proses_data(sheets_dict, config):
 
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
-    # ===== BERSIHKAN DUPLIKAT =====
-    # Tentukan kolom kunci untuk identifikasi duplikat
+    # Bersihkan duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT']
-    # Jika ada kolom tonase numerik, tambahkan agar tidak menghapus perbedaan muatan
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
         key_cols.append(ton_col)
-    # Hapus duplikat berdasarkan kolom kunci, simpan data pertama
     df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
-    # ===============================
 
     # Konversi numerik tonase
     if ton_col:
@@ -250,6 +261,7 @@ def proses_data(sheets_dict, config):
     df_armada, teraktif, tidak_efisien = hitung_agregasi_armada(df_master, col_netto)
     df_waktu = hitung_waktu_per_jenis(df_master)
     df_kec = hitung_per_kecamatan(df_master, col_netto)
+    df_type = hitung_per_type(df_master, col_netto)
     df_tren = hitung_tren_harian(df_master, col_netto)
 
     return {
@@ -259,6 +271,7 @@ def proses_data(sheets_dict, config):
         'tidak_efisien': tidak_efisien,
         'df_waktu_jenis': df_waktu,
         'df_kec': df_kec,
+        'df_type': df_type,
         'df_tren': df_tren,
         'col_netto': col_netto,
         'skipped': skipped,
@@ -273,7 +286,7 @@ if "sheets" not in st.session_state:
 if "config" not in st.session_state:
     st.session_state.config = None
 
-# -------------------------- ANTARMUKA STREAMLIT --------------------------
+# -------------------------- ANTARMUKA --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
 st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Data duplikat akan dibersihkan otomatis.")
@@ -356,12 +369,14 @@ if st.session_state.hasil is not None:
     df_master = data['df_master']
     col_netto = data['col_netto']
     df_kec = data['df_kec']
+    df_type = data['df_type']
     df_armada = data['df_armada']
     teraktif = data['teraktif']
     tidak_efisien = data['tidak_efisien']
     df_waktu_jenis = data['df_waktu_jenis']
     df_tren = data['df_tren']
 
+    # Filter Kecamatan
     st.sidebar.markdown("---")
     st.sidebar.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
@@ -398,6 +413,8 @@ if st.session_state.hasil is not None:
         st.plotly_chart(fig_top_kec, use_container_width=True)
 
     st.markdown("---")
+
+    # Ringkasan Seluruh Kecamatan
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
@@ -412,6 +429,24 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
+    # Ringkasan per TYPE (BARU)
+    st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
+    if not df_type.empty:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(df_type.style.format({'Total_Tonase': '{:,.0f}', 'Rata_Durasi_Menit': '{:.1f}'}), use_container_width=True)
+        with col2:
+            fig_type_pie = px.pie(df_type, names='TYPE', values='Total_Ritase',
+                                  title='Distribusi Trip per Type')
+            st.plotly_chart(fig_type_pie, use_container_width=True)
+        fig_type_bar = px.bar(df_type, x='TYPE', y='Total_Tonase', color='Total_Tonase',
+                              color_continuous_scale='Blues', title='Total Tonase per Type')
+        fig_type_bar.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_type_bar, use_container_width=True)
+    else:
+        st.info("Data TYPE tidak tersedia.")
+
+    # Tren Harian
     if not df_tren.empty:
         st.subheader("📈 Tren Harian (Semua Kecamatan)")
         fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase',
@@ -419,6 +454,7 @@ if st.session_state.hasil is not None:
         fig_tren.update_traces(line_color='#0D9488')
         st.plotly_chart(fig_tren, use_container_width=True)
 
+    # Armada Teraktif & Tidak Efisien
     st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien (Keseluruhan)")
     if teraktif is not None:
         col_a, col_b = st.columns(2)
@@ -428,6 +464,7 @@ if st.session_state.hasil is not None:
             if tidak_efisien is not None:
                 st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN', '-')} ({tidak_efisien.get('NO_PLAT', '')}) – {int(tidak_efisien.get('Total_Trip', 0))} trip")
 
+    # Waktu Tempuh per Jenis Armada
     if not df_waktu_jenis.empty:
         st.subheader("⏱️ Rata‑rata Waktu Tempuh per Jenis Armada")
         st.dataframe(df_waktu_jenis.style.format({'Rata2 Waktu Tempuh (menit)': '{:.1f}'}))
@@ -435,8 +472,10 @@ if st.session_state.hasil is not None:
             fig_hist = px.histogram(df_master, x='DURASI_MENIT', nbins=30, title='Distribusi Durasi Pelayanan (menit)')
             st.plotly_chart(fig_hist, use_container_width=True)
 
+    # Laporan Ringkasan
     st.subheader("📝 Laporan Ringkasan Otomatis")
     kec_tertinggi = df_kec.iloc[0]['Kecamatan'] if not df_kec.empty else '-'
+    type_tertinggi = df_type.iloc[0]['TYPE'] if not df_type.empty else '-'
     total_tonase_global = df_master[col_netto].sum()/1000 if col_netto else 0
     laporan = f"""
 **Ringkasan Operasional (Juni 2026):**
@@ -444,12 +483,14 @@ if st.session_state.hasil is not None:
 - Armada aktif: {df_master['NOPIN'].nunique()} unit
 - Total volume sampah: {total_tonase_global:,.1f} Ton
 - Kecamatan tersibuk: **{kec_tertinggi}**
+- Jenis armada dominan: **{type_tertinggi}**
 - Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','')}) – {int(teraktif.get('Total_Trip',0))} trip
 - Armada tidak efisien: {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','')}) – {int(tidak_efisien.get('Total_Trip',0))} trip
 """
     st.markdown(laporan)
     st.download_button("📄 Unduh Ringkasan (TXT)", laporan.encode('utf-8'), "ringkasan.txt")
 
+    # Unduhan
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
@@ -464,6 +505,7 @@ if st.session_state.hasil is not None:
         st.download_button("📊 Statistik Armada (Excel)", to_excel(df_armada), "Statistik_Armada.xlsx")
     with col_u2:
         st.download_button("📊 Laporan per Kecamatan (Excel)", to_excel(df_kec), "Kecamatan.xlsx")
+        st.download_button("📊 Laporan per Type (Excel)", to_excel(df_type), "Type_Armada.xlsx")
         st.download_button("📈 Tren Harian (Excel)", to_excel(df_tren), "Tren_Harian.xlsx")
     with col_u3:
         if not df_waktu_jenis.empty:
