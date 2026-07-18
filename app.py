@@ -6,9 +6,10 @@ import plotly.io as pio
 import requests
 import os
 from io import BytesIO
+from datetime import datetime
 
-# -------------------------- KONFIGURASI --------------------------
-st.set_page_config(page_title="Dashboard Armada DLH", page_icon="🚛", layout="wide")
+# -------------------------- KONFIGURASI HALAMAN --------------------------
+st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 
 st.markdown("""
 <style>
@@ -33,7 +34,7 @@ def laporan_ai(statistik: str) -> str:
         return "⚠️ API Key DeepSeek belum diatur."
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     prompt = f"""
-Anda analis data armada. Buat laporan singkat (3 paragraf) dalam bahasa Indonesia dari statistik berikut:
+Anda analis data armada DLH. Buat laporan singkat (3 paragraf) dalam bahasa Indonesia dari statistik berikut:
 {statistik}
 Sertakan:
 1. Gambaran umum performa armada.
@@ -51,369 +52,344 @@ Sertakan:
     except Exception as e:
         return f"❌ Gagal: {str(e)}"
 
-# -------------------------- FUNGSI BANTU --------------------------
-def cari_kolom(kolom, kata_kunci):
-    for col in kolom:
-        if any(kw in col.lower() for kw in kata_kunci):
-            return col
-    return None
-
+# -------------------------- FUNGSI PROSES DATA (SESUAI NOTEBOOK) --------------------------
 @st.cache_data(show_spinner="Membaca file...")
-def baca_semua_sheet(uploaded_file):
-    xls = pd.ExcelFile(uploaded_file, engine='openpyxl') if uploaded_file.name.endswith('.xlsx') else pd.ExcelFile(uploaded_file)
-    return {name: pd.read_excel(xls, sheet_name=name) for name in xls.sheet_names if not pd.read_excel(xls, sheet_name=name).empty}
+def load_all_sheets(uploaded_file):
+    """Membaca semua sheet dari file Excel."""
+    xls = pd.ExcelFile(uploaded_file)
+    sheets = {}
+    for name in xls.sheet_names:
+        df = pd.read_excel(xls, sheet_name=name)
+        if not df.empty:
+            sheets[name] = df
+    return sheets
 
-def deteksi_otomatis(sheets_dict):
-    sheet_names = list(sheets_dict.keys())
-    armada_sheet = next((s for s in sheet_names if "list armada" in s.lower() or "master" in s.lower() or "armada" in s.lower()), sheet_names[0])
-    daily_sheets = [s for s in sheet_names if s != armada_sheet]
-    if not daily_sheets:
-        return None
+def process_dlh_data(sheets_dict):
+    """Mengimplementasikan alur notebook DLH secara penuh."""
+    # 1. Cari sheet referensi (List Armada)
+    armada_sheet = None
+    for name in sheets_dict.keys():
+        if 'list armada' in name.lower():
+            armada_sheet = name
+            break
+    if armada_sheet is None:
+        # fallback: gunakan sheet pertama yang mengandung 'armada' atau 'master'
+        for name in sheets_dict.keys():
+            if 'armada' in name.lower() or 'master' in name.lower():
+                armada_sheet = name
+                break
+    if armada_sheet is None:
+        st.error("Sheet 'List Armada' tidak ditemukan. Pastikan ada sheet dengan nama tersebut.")
+        return None, None, None
 
-    df_arm = sheets_dict[armada_sheet]
-    df_day = sheets_dict[daily_sheets[0]]
-    kolom_arm = df_arm.columns.tolist()
-    kolom_day = df_day.columns.tolist()
+    # 2. Baca referensi
+    df_ref = sheets_dict[armada_sheet].copy()
+    # Cari header (mungkin ada baris kosong)
+    # Asumsikan header berada di baris pertama (header=0), jika tidak, bisa diatur manual
+    # Bersihkan nama kolom
+    df_ref.columns = [str(c).strip().upper() for c in df_ref.columns]
+    # Cari kolom penting
+    col_nopin = [c for c in df_ref.columns if 'NOPIN' in c or 'NO. PINTU' in c or 'PINTU' in c][0]
+    col_plat = [c for c in df_ref.columns if 'PLAT' in c or 'NOPOL' in c][0]
+    col_kec = [c for c in df_ref.columns if 'KECAMATAN' in c or 'LOKASI' in c][0] if any('KECAMATAN' in c or 'LOKASI' in c for c in df_ref.columns) else None
+    col_merk = [c for c in df_ref.columns if 'MERK' in c or 'MEREK' in c][0] if any('MERK' in c or 'MEREK' in c for c in df_ref.columns) else None
+    col_type = [c for c in df_ref.columns if 'TYPE' in c or 'TIPE' in c][0] if any('TYPE' in c or 'TIPE' in c for c in df_ref.columns) else None
 
-    no_pintu_arm = cari_kolom(kolom_arm, ["no. pintu", "no pintu", "pintu", "nopintu"])
-    plat_arm = cari_kolom(kolom_arm, ["plat", "nopol", "nomor polisi"])
-    jenis_arm = cari_kolom(kolom_arm, ["jenis", "tipe", "type"])
+    # Standarisasi
+    df_ref['NOPIN'] = df_ref[col_nopin].astype(str).str.strip().str.upper()
+    df_ref['NO.PLAT'] = df_ref[col_plat].astype(str).str.strip().str.upper()
+    # Buat dictionary untuk sinkronisasi
+    ref_dict = df_ref.set_index('NOPIN')[['NO.PLAT'] + 
+        ([col_kec] if col_kec else []) + 
+        ([col_merk] if col_merk else []) + 
+        ([col_type] if col_type else [])].to_dict('index')
+    # Ganti nama kolom kecamatan, merk, type jika ada
+    if col_kec: ref_dict = {k: {**v, 'Kecamatan': v[col_kec]} for k, v in ref_dict.items()}
+    if col_merk: ref_dict = {k: {**v, 'MERK': v[col_merk]} for k, v in ref_dict.items()}
+    if col_type: ref_dict = {k: {**v, 'TYPE': v[col_type]} for k, v in ref_dict.items()}
 
-    no_pintu_day = cari_kolom(kolom_day, ["no. pintu", "no pintu", "pintu", "nopintu"])
-    plat_day = cari_kolom(kolom_day, ["plat", "nopol"])
-    tonase = cari_kolom(kolom_day, ["tonase", "ton", "berat", "muatan", "tonnase"])
-    tgl_berangkat = cari_kolom(kolom_day, ["berangkat", "start", "berang"])
-    tgl_tiba = cari_kolom(kolom_day, ["tiba", "finish", "end"])
+    # 3. Proses sheet harian (nama sheet berupa angka, atau pilih otomatis selain armada)
+    daily_sheets = [s for s in sheets_dict.keys() if s != armada_sheet]
+    # Filter yang mungkin berupa angka (1-30) atau mengandung 'harian'/'daily'
+    # Di notebook, sheet harian adalah digit. Kita coba deteksi.
+    hari_sheets = []
+    for s in daily_sheets:
+        if s.isdigit():
+            hari_sheets.append(s)
+        elif 'harian' in s.lower() or 'daily' in s.lower():
+            hari_sheets.append(s)
+    if not hari_sheets:
+        # Jika tidak ada yang cocok, gunakan semua selain armada
+        hari_sheets = daily_sheets
 
-    if not all([no_pintu_arm, plat_arm, no_pintu_day, plat_day, tonase, tgl_berangkat, tgl_tiba]):
-        return None
+    cleaned_sheets = {}
+    total_baris = 0
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
 
-    return {
-        "armada_sheet": armada_sheet,
-        "daily_sheets": daily_sheets,
-        "kolom": {
-            "arm_no_pintu": no_pintu_arm,
-            "arm_plat": plat_arm,
-            "arm_jenis": jenis_arm,
-            "day_no_pintu": no_pintu_day,
-            "day_plat": plat_day,
-            "day_tonase": tonase,
-            "day_berangkat": tgl_berangkat,
-            "day_tiba": tgl_tiba
-        }
-    }
+    for i, hari in enumerate(hari_sheets):
+        progress_text.text(f"Memproses sheet: {hari} ({i+1}/{len(hari_sheets)})")
+        progress_bar.progress((i+1)/len(hari_sheets))
 
-def proses_data(sheets_dict, mapping):
-    df_armada = sheets_dict[mapping["armada_sheet"]].copy()
-    dfs_harian = [sheets_dict[s] for s in mapping["daily_sheets"]]
-    df_raw = pd.concat(dfs_harian, ignore_index=True)
-    c = mapping["kolom"]
+        df_raw = sheets_dict[hari].copy()
+        # Cari header (baris yang mengandung 'PINTU' atau 'PLAT MOBIL')
+        header_idx = None
+        for idx, row in df_raw.iterrows():
+            row_str = " ".join(row.astype(str).dropna().str.upper().values)
+            if 'PINTU' in row_str or 'PLAT MOBIL' in row_str:
+                header_idx = idx
+                break
+        if header_idx is None:
+            continue  # lewati sheet yang tidak memiliki header
 
-    def norm(x): return str(x).strip().upper() if pd.notna(x) else ""
+        # Baca ulang dengan header di baris itu
+        df_hari = pd.read_excel(uploaded_file, sheet_name=hari, header=header_idx) if 'uploaded_file' in locals() else df_raw.iloc[header_idx+1:].reset_index(drop=True)
+        # Untuk Streamlit, kita sudah punya df_raw, kita bisa set header
+        # Simulasi: gunakan df_raw, buang baris sebelum header_idx, jadikan header
+        if header_idx is not None:
+            df_hari = df_raw.iloc[header_idx+1:].reset_index(drop=True)
+            df_hari.columns = df_raw.iloc[header_idx].tolist()
+        else:
+            continue
 
-    df_armada["_no_pintu"] = df_armada[c["arm_no_pintu"]].apply(norm)
-    df_armada["_plat"] = df_armada[c["arm_plat"]].apply(norm)
-    df_armada["_jenis"] = df_armada[c["arm_jenis"]].apply(lambda x: str(x).strip()) if c["arm_jenis"] else "Tidak Diketahui"
+        # Bersihkan nama kolom
+        df_hari.columns = [str(c).strip().upper() for c in df_hari.columns]
 
-    df_raw["_no_pintu"] = df_raw[c["day_no_pintu"]].apply(norm)
-    df_raw["_plat"] = df_raw[c["day_plat"]].apply(norm)
-    df_raw["_tonase"] = pd.to_numeric(df_raw[c["day_tonase"]], errors='coerce')
-    df_raw["_berangkat"] = pd.to_datetime(df_raw[c["day_berangkat"]], errors='coerce', dayfirst=True)
-    df_raw["_tiba"] = pd.to_datetime(df_raw[c["day_tiba"]], errors='coerce', dayfirst=True)
+        # Cari kolom NOPIN dan NO_PLAT
+        col_nopin_h = [c for c in df_hari.columns if 'PINTU' in c or 'NOPIN' in c]
+        col_plat_h = [c for c in df_hari.columns if 'PLAT' in c]
+        if not col_nopin_h or not col_plat_h:
+            continue
 
-    pintu_ke_plat = df_armada.set_index("_no_pintu")["_plat"].to_dict()
-    plat_ke_pintu = df_armada.set_index("_plat")["_no_pintu"].to_dict()
-    pintu_ke_jenis = df_armada.set_index("_no_pintu")["_jenis"].to_dict() if c["arm_jenis"] else {}
+        df_hari.rename(columns={col_nopin_h[0]: 'NOPIN', col_plat_h[0]: 'NO_PLAT'}, inplace=True)
 
-    perbaikan = 0
-    for idx, row in df_raw.iterrows():
-        p = row["_no_pintu"]
-        pl = row["_plat"]
-        if p in pintu_ke_plat and pl != pintu_ke_plat[p]:
-            df_raw.at[idx, "_plat"] = pintu_ke_plat[p]
-            perbaikan += 1
-        elif pl in plat_ke_pintu and p != plat_ke_pintu[pl]:
-            df_raw.at[idx, "_no_pintu"] = plat_ke_pintu[pl]
-            perbaikan += 1
+        # Bersihkan NOPIN
+        df_hari = df_hari.dropna(subset=['NOPIN'])
+        df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
+        # Hapus baris summary
+        df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
+        df_hari = df_hari[df_hari['NOPIN'] != '']
+        # Fix .0
+        df_hari['NOPIN'] = df_hari['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
 
-    df_raw["_jenis"] = df_raw["_no_pintu"].map(pintu_ke_jenis).fillna("Tidak Diketahui")
-    df_raw["_waktu_tempuh"] = (df_raw["_tiba"] - df_raw["_berangkat"]).dt.total_seconds() / 3600
-    df_raw.loc[df_raw["_waktu_tempuh"] < 0, "_waktu_tempuh"] = np.nan
+        # Sinkronisasi dengan master
+        def sinkron(row):
+            nopin = row['NOPIN']
+            if nopin in ref_dict:
+                row['NO_PLAT'] = ref_dict[nopin]['NO.PLAT']
+                if 'Kecamatan' in ref_dict[nopin]: row['Kecamatan'] = ref_dict[nopin]['Kecamatan']
+                if 'MERK' in ref_dict[nopin]: row['MERK'] = ref_dict[nopin]['MERK']
+                if 'TYPE' in ref_dict[nopin]: row['TYPE'] = ref_dict[nopin]['TYPE']
+            return row
 
-    df_clean = df_raw.rename(columns={
-        "_no_pintu": "No. Pintu",
-        "_plat": "Plat Mobil",
-        "_tonase": "Tonase",
-        "_berangkat": "Waktu Berangkat",
-        "_tiba": "Waktu Tiba",
-        "_jenis": "Jenis Armada",
-        "_waktu_tempuh": "Waktu Tempuh (jam)"
-    })
-    return df_armada, df_clean, perbaikan
+        df_hari = df_hari.apply(sinkron, axis=1)
 
-# -------------------------- INISIALISASI SESSION STATE --------------------------
+        # Tambah kolom TANGGAL (jika nama sheet digit, anggap hari)
+        try:
+            tgl = f"2026-06-{int(hari):02d}" if hari.isdigit() else hari
+        except:
+            tgl = hari
+        df_hari['TANGGAL'] = tgl
+
+        cleaned_sheets[hari] = df_hari
+        total_baris += len(df_hari)
+
+    progress_text.empty()
+    progress_bar.empty()
+
+    if not cleaned_sheets:
+        st.error("Tidak ada sheet harian yang berhasil diproses.")
+        return None, None, None
+
+    # Gabungkan semua
+    df_master = pd.concat(cleaned_sheets.values(), ignore_index=True)
+
+    # Identifikasi kolom tonase (NETTO/GROSS/TARE)
+    col_netto = [c for c in df_master.columns if 'NETTO' in c]
+    col_gross = [c for c in df_master.columns if 'GROSS' in c or 'BRUTO' in c]
+    col_tare = [c for c in df_master.columns if 'TARE' in c or 'TARRA' in c]
+    # Konversi numerik
+    for col in col_netto + col_gross + col_tare:
+        df_master[col] = pd.to_numeric(df_master[col], errors='coerce').fillna(0)
+
+    # Identifikasi kolom waktu (JAM MASUK/KELUAR)
+    col_masuk = [c for c in df_master.columns if 'MASUK' in c or 'JAM_1' in c or 'TIMBANG1' in c]
+    col_keluar = [c for c in df_master.columns if 'KELUAR' in c or 'JAM_2' in c or 'TIMBANG2' in c]
+
+    # Hitung durasi jika ada
+    if col_masuk and col_keluar:
+        df_master['WAKTU_MASUK_DT'] = pd.to_datetime(df_master[col_masuk[0]], format='%H:%M:%S', errors='coerce')
+        df_master['WAKTU_KELUAR_DT'] = pd.to_datetime(df_master[col_keluar[0]], format='%H:%M:%S', errors='coerce')
+        df_master['DURASI_MENIT'] = (df_master['WAKTU_KELUAR_DT'] - df_master['WAKTU_MASUK_DT']).dt.total_seconds() / 60
+        df_master = df_master[(df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)]
+
+    return df_master, ref_dict, armada_sheet
+
+# -------------------------- SESSION STATE --------------------------
 if "data_processed" not in st.session_state:
     st.session_state.data_processed = False
-    st.session_state.df_clean = None
-    st.session_state.stat_armada = None
-    st.session_state.fig1 = None
-    st.session_state.fig2 = None
-    st.session_state.fig3 = None
-    st.session_state.fig4 = None
+    st.session_state.df_master = None
+    st.session_state.figures = {}
     st.session_state.laporan_teks = ""
 
 # -------------------------- APLIKASI UTAMA --------------------------
 def main():
-    st.title("🚛 Dashboard Analitik & Rekomendasi Armada")
-    st.markdown("Unggah file Excel dengan banyak sheet (1 List Armada + 29 Harian) atau format lainnya. Sistem akan otomatis mendeteksi dan memproses data, lalu Anda bisa **mengunduh semua hasil** di akhir.")
+    st.title("🚛 Dashboard Analitik DLH – Armada Sampah")
+    st.markdown("Unggah file Excel Anda (format .xls/.xlsx) dengan sheet **List Armada** dan sheet harian (1–30). Sistem akan otomatis memproses seperti notebook DLH dan menampilkan analisis lengkap.")
 
     with st.sidebar:
         uploaded_file = st.file_uploader("📂 Pilih file Excel", type=["xlsx", "xls"])
         if uploaded_file:
-            st.success("File berhasil diunggah")
+            st.success("File siap diproses")
 
-    if uploaded_file:
-        sheets_dict = baca_semua_sheet(uploaded_file)
-        if not sheets_dict:
-            st.error("File tidak memiliki sheet yang valid.")
-            return
+    if uploaded_file is not None:
+        if st.sidebar.button("🚀 Proses Data (Jalankan Semua)", use_container_width=True):
+            with st.spinner("Menjalankan alur notebook DLH..."):
+                sheets_dict = load_all_sheets(uploaded_file)
+                if not sheets_dict:
+                    st.error("File tidak memiliki sheet yang bisa dibaca.")
+                    return
+                df_master, ref_dict, armada_sheet = process_dlh_data(sheets_dict)
+                if df_master is not None:
+                    st.session_state.df_master = df_master
+                    st.session_state.ref_dict = ref_dict
+                    st.session_state.data_processed = True
+                    st.success("✅ Semua proses selesai! Data siap dianalisis.")
+                    st.balloons()
 
-        mapping = deteksi_otomatis(sheets_dict)
-
-        if mapping is None:
-            st.warning("Deteksi otomatis gagal. Silakan pilih sheet dan kolom secara manual.")
-            with st.sidebar.expander("⚙️ Pemetaan Manual", expanded=True):
-                sheet_names = list(sheets_dict.keys())
-                armada_sheet = st.selectbox("Sheet List Armada", sheet_names)
-                daily_sheets = st.multiselect("Sheet Harian", [s for s in sheet_names if s != armada_sheet])
-                if daily_sheets:
-                    df_arm = sheets_dict[armada_sheet]
-                    df_day = sheets_dict[daily_sheets[0]]
-                    cols_arm = df_arm.columns.tolist()
-                    cols_day = df_day.columns.tolist()
-                    c_no_pintu_arm = st.selectbox("No. Pintu (Armada)", cols_arm, index=0)
-                    c_plat_arm = st.selectbox("Plat (Armada)", cols_arm, index=min(1, len(cols_arm)-1))
-                    c_jenis_arm = st.selectbox("Jenis Armada (opsional)", ["(tidak ada)"] + cols_arm, index=0)
-                    c_no_pintu_day = st.selectbox("No. Pintu (Harian)", cols_day, index=0)
-                    c_plat_day = st.selectbox("Plat (Harian)", cols_day, index=min(1, len(cols_day)-1))
-                    c_tonase = st.selectbox("Tonase", cols_day, index=min(2, len(cols_day)-1))
-                    c_berangkat = st.selectbox("Waktu Berangkat", cols_day, index=min(3, len(cols_day)-1))
-                    c_tiba = st.selectbox("Waktu Tiba", cols_day, index=min(4, len(cols_day)-1))
-                    mapping = {
-                        "armada_sheet": armada_sheet,
-                        "daily_sheets": daily_sheets,
-                        "kolom": {
-                            "arm_no_pintu": c_no_pintu_arm,
-                            "arm_plat": c_plat_arm,
-                            "arm_jenis": c_jenis_arm if c_jenis_arm != "(tidak ada)" else None,
-                            "day_no_pintu": c_no_pintu_day,
-                            "day_plat": c_plat_day,
-                            "day_tonase": c_tonase,
-                            "day_berangkat": c_berangkat,
-                            "day_tiba": c_tiba
-                        }
-                    }
-        else:
-            st.sidebar.success("✅ Deteksi otomatis berhasil!")
-            st.sidebar.info(f"Sheet Armada: {mapping['armada_sheet']}\nJumlah sheet harian: {len(mapping['daily_sheets'])}")
-
-        if st.sidebar.button("🚀 Proses Data", use_container_width=True):
-            with st.spinner("Menggabungkan dan membersihkan data..."):
-                df_armada, df_clean, perbaikan = proses_data(sheets_dict, mapping)
-
-            st.session_state.data_processed = True
-            st.session_state.df_clean = df_clean
-            st.success(f"✅ Data berhasil diproses. {perbaikan} ketidaksesuaian diperbaiki berdasarkan List Armada.")
-            st.balloons()
-
-        # Jika data sudah diproses, tampilkan dashboard
         if st.session_state.data_processed:
-            df_clean = st.session_state.df_clean
+            df = st.session_state.df_master.copy()
 
-            # Filter
+            # Sidebar filter
             st.sidebar.header("🔍 Filter")
-            jenis_list = ["Semua"] + sorted(df_clean["Jenis Armada"].unique())
-            jenis_terpilih = st.sidebar.selectbox("Jenis Armada", jenis_list)
-            if "Waktu Berangkat" in df_clean.columns:
-                min_tgl = df_clean["Waktu Berangkat"].min()
-                max_tgl = df_clean["Waktu Berangkat"].max()
-                if pd.notna(min_tgl) and pd.notna(max_tgl):
-                    rentang = st.sidebar.date_input("Rentang Tanggal", [min_tgl, max_tgl])
+            # Filter kecamatan
+            if 'Kecamatan' in df.columns:
+                kec_list = ['Semua'] + sorted(df['Kecamatan'].dropna().unique().tolist())
+                kec_terpilih = st.sidebar.selectbox("Kecamatan", kec_list)
+                if kec_terpilih != 'Semua':
+                    df = df[df['Kecamatan'] == kec_terpilih]
+            # Filter tanggal
+            if 'TANGGAL' in df.columns:
+                tgl_list = sorted(df['TANGGAL'].unique())
+                if len(tgl_list) > 1:
+                    rentang = st.sidebar.date_input("Rentang Tanggal", 
+                        [pd.to_datetime(tgl_list[0]), pd.to_datetime(tgl_list[-1])])
+                    if len(rentang) == 2:
+                        df = df[(pd.to_datetime(df['TANGGAL']) >= pd.Timestamp(rentang[0])) & 
+                                (pd.to_datetime(df['TANGGAL']) <= pd.Timestamp(rentang[1]))]
 
-            df_filtered = df_clean.copy()
-            if jenis_terpilih != "Semua":
-                df_filtered = df_filtered[df_filtered["Jenis Armada"] == jenis_terpilih]
-            if 'rentang' in locals() and len(rentang) == 2:
-                df_filtered = df_filtered[(df_filtered["Waktu Berangkat"] >= pd.Timestamp(rentang[0])) &
-                                          (df_filtered["Waktu Berangkat"] <= pd.Timestamp(rentang[1]))]
+            # --- METRIK UTAMA ---
+            total_trip = len(df)
+            total_armada = df['NOPIN'].nunique()
+            # Cari kolom netto
+            col_netto = [c for c in df.columns if 'NETTO' in c]
+            total_tonase = df[col_netto[0]].sum() / 1000 if col_netto else 0
+            rata_durasi = df['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df.columns else 0
 
-            # Metrik
-            total_trip = len(df_filtered)
-            total_tonase = df_filtered["Tonase"].sum()
-            rata_waktu = df_filtered["Waktu Tempuh (jam)"].mean()
-            armada_aktif = df_filtered["No. Pintu"].nunique()
-
-            stat_armada = df_filtered.groupby("No. Pintu").agg(Trip=("No. Pintu", "count"), Tonase=("Tonase", "sum")).reset_index()
-            paling_aktif = stat_armada.loc[stat_armada["Trip"].idxmax()] if not stat_armada.empty else None
-            paling_sedikit = stat_armada.loc[stat_armada["Trip"].idxmin()] if not stat_armada.empty else None
-            avg_jenis = df_filtered.groupby("Jenis Armada")["Waktu Tempuh (jam)"].mean().reset_index()
-
-            # Grafik
-            top_trip = df_filtered.groupby("No. Pintu").size().reset_index(name="Trip").nlargest(10, "Trip")
-            fig1 = px.bar(top_trip, x="No. Pintu", y="Trip", color="Trip", color_continuous_scale="viridis",
-                          title="🏆 10 Armada dengan Trip Terbanyak")
-            fig1.update_layout(xaxis_tickangle=-45)
-
-            distribusi_jenis = df_filtered["Jenis Armada"].value_counts().reset_index()
-            distribusi_jenis.columns = ["Jenis", "Jumlah"]
-            fig2 = px.pie(distribusi_jenis, names="Jenis", values="Jumlah", hole=0.4,
-                          title="🍩 Distribusi Trip per Jenis Armada")
-
-            top_ton = df_filtered.groupby("No. Pintu")["Tonase"].sum().reset_index().nlargest(10, "Tonase")
-            fig3 = px.bar(top_ton, x="No. Pintu", y="Tonase", color="Tonase", color_continuous_scale="orrd",
-                          title="📦 10 Armada dengan Tonase Terbesar")
-            fig3.update_layout(xaxis_tickangle=-45)
-
-            fig4 = px.bar(avg_jenis, x="Jenis Armada", y="Waktu Tempuh (jam)", color="Waktu Tempuh (jam)",
-                          color_continuous_scale="blues", title="⏱️ Rata-rata Waktu Tempuh per Jenis")
-
-            # Simpan di session state
-            st.session_state.stat_armada = stat_armada
-            st.session_state.fig1 = fig1
-            st.session_state.fig2 = fig2
-            st.session_state.fig3 = fig3
-            st.session_state.fig4 = fig4
-
-            # Tampilkan metrik
             col1, col2, col3, col4 = st.columns(4)
-            col1.markdown(f'<div class="metric-card"><div class="metric-label">Total Trip</div><div class="metric-value">{total_trip}</div></div>', unsafe_allow_html=True)
-            col2.markdown(f'<div class="metric-card"><div class="metric-label">Total Tonase</div><div class="metric-value">{total_tonase:,.1f}</div></div>', unsafe_allow_html=True)
-            col3.markdown(f'<div class="metric-card"><div class="metric-label">Rata² Waktu Tempuh</div><div class="metric-value">{rata_waktu:.1f} jam</div></div>', unsafe_allow_html=True)
-            col4.markdown(f'<div class="metric-card"><div class="metric-label">Armada Aktif</div><div class="metric-value">{armada_aktif}</div></div>', unsafe_allow_html=True)
+            with col1:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Total Trip</div><div class="metric-value">{total_trip}</div></div>', unsafe_allow_html=True)
+            with col2:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Armada Aktif</div><div class="metric-value">{total_armada}</div></div>', unsafe_allow_html=True)
+            with col3:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Total Tonase (Ton)</div><div class="metric-value">{total_tonase:,.1f}</div></div>', unsafe_allow_html=True)
+            with col4:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Rata² Durasi (menit)</div><div class="metric-value">{rata_durasi:.1f}</div></div>', unsafe_allow_html=True)
 
             st.markdown("---")
-            col_kiri, col_kanan = st.columns(2)
-            with col_kiri:
-                st.plotly_chart(fig1, use_container_width=True)
-            with col_kanan:
-                st.plotly_chart(fig2, use_container_width=True)
 
-            col_kiri2, col_kanan2 = st.columns(2)
-            with col_kiri2:
-                st.plotly_chart(fig3, use_container_width=True)
-            with col_kanan2:
-                st.plotly_chart(fig4, use_container_width=True)
+            # ========== VISUALISASI SESUAI NOTEBOOK ==========
+            # 1. Tren Ritase Harian
+            if 'TANGGAL' in df.columns:
+                tren_harian = df.groupby('TANGGAL').size().reset_index(name='Total_Ritase')
+                tren_harian['TANGGAL'] = pd.to_datetime(tren_harian['TANGGAL'])
+                tren_harian = tren_harian.sort_values('TANGGAL')
+                fig_tren = px.line(tren_harian, x='TANGGAL', y='Total_Ritase', title='Tren Ritase Harian', markers=True)
+                fig_tren.update_traces(line_color='#0D9488', line_width=3)
+                st.plotly_chart(fig_tren, use_container_width=True)
+                st.session_state.figures['tren'] = fig_tren
 
-            st.markdown("---")
-            if paling_aktif is not None:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.info(f"### 🥇 Armada Teraktif\n**{paling_aktif['No. Pintu']}**  \nTrip: {int(paling_aktif['Trip'])} | Tonase: {paling_aktif['Tonase']:,.1f}")
-                with col_b:
-                    st.warning(f"### 🐌 Armada Paling Tidak Efisien\n**{paling_sedikit['No. Pintu']}**  \nTrip: {int(paling_sedikit['Trip'])} | Tonase: {paling_sedikit['Tonase']:,.1f}")
+            # 2. Distribusi Tonase per Kecamatan
+            if 'Kecamatan' in df.columns and col_netto:
+                kec_agg = df.groupby('Kecamatan').agg(Total_Tonase=(col_netto[0], 'sum')).reset_index()
+                kec_agg = kec_agg.sort_values('Total_Tonase', ascending=False)
+                fig_kec = px.bar(kec_agg, x='Kecamatan', y='Total_Tonase', color='Total_Tonase',
+                                 color_continuous_scale='Viridis', title='Total Tonase per Kecamatan')
+                fig_kec.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig_kec, use_container_width=True)
+                st.session_state.figures['kec'] = fig_kec
 
-            with st.expander("📊 Lihat Data Lengkap & Statistik"):
-                st.dataframe(stat_armada.sort_values("Trip", ascending=False).style.format({"Tonase": "{:,.1f}"}))
+            # 3. Jam Sibuk (jika data waktu ada)
+            if 'JAM_INPUT' in df.columns:
+                jam_counts = df.groupby('JAM_INPUT').size().reset_index(name='Jumlah')
+                jam_counts = jam_counts.sort_values('JAM_INPUT')
+                fig_jam = px.area(jam_counts, x='JAM_INPUT', y='Jumlah', title='Pola Kedatangan per Jam')
+                fig_jam.update_xaxes(dtick=1)
+                st.plotly_chart(fig_jam, use_container_width=True)
+                st.session_state.figures['jam'] = fig_jam
 
-            # Laporan AI
-            st.subheader("📝 Laporan Cerdas dari DeepSeek AI")
+            # 4. Top Armada berdasarkan trip
+            top_armada = df.groupby('NOPIN').size().reset_index(name='Trip').nlargest(10, 'Trip')
+            fig_top = px.bar(top_armada, x='NOPIN', y='Trip', color='Trip', title='10 Armada Teraktif')
+            st.plotly_chart(fig_top, use_container_width=True)
+            st.session_state.figures['top'] = fig_top
+
+            # --- LAPORAN AI ---
+            st.subheader("📝 Laporan Cerdas (DeepSeek AI)")
             statistik_teks = f"""
-Total trip: {total_trip}
-Total tonase: {total_tonase:,.1f}
-Rata-rata waktu tempuh: {rata_waktu:.1f} jam
-Armada teraktif: {paling_aktif['No. Pintu']} ({int(paling_aktif['Trip'])} trip)
-Armada paling sedikit trip: {paling_sedikit['No. Pintu']} ({int(paling_sedikit['Trip'])} trip)
-Rata-rata waktu tempuh per jenis armada:
-{avg_jenis.to_string(index=False)}
+Total Trip: {total_trip}
+Armada Aktif: {total_armada}
+Total Tonase: {total_tonase:,.1f} Ton
+Rata-rata Durasi: {rata_durasi:.1f} menit
             """
-            if st.button("🔮 Buat Laporan AI", key="laporan_btn"):
+            if st.button("🔮 Buat Laporan AI"):
                 with st.spinner("Menghubungi DeepSeek..."):
                     st.session_state.laporan_teks = laporan_ai(statistik_teks)
                 st.markdown("### 📄 Hasil Laporan")
                 st.write(st.session_state.laporan_teks)
-            else:
-                st.info("Klik tombol di atas untuk menghasilkan laporan otomatis (API Key diperlukan).")
 
-            # Bagian Download
-            st.markdown("## 📥 Unduh Hasil Analisis")
-            st.markdown("Pilih file yang ingin Anda unduh:")
-
-            @st.cache_data
-            def ke_excel(df):
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Master Data')
-                return output.getvalue()
-
-            @st.cache_data
-            def ke_csv(df):
-                return df.to_csv(index=False).encode('utf-8')
-
-            def grafik_ke_png(fig):
-                try:
-                    return pio.to_image(fig, format='png', scale=2)
-                except Exception as e:
-                    st.error(f"Gagal mengonversi grafik: {e}. Pastikan kaleido terinstal (pip install kaleido).")
-                    return None
-
-            col_d1, col_d2, col_d3, col_d4 = st.columns(4)
-            with col_d1:
-                st.download_button(
-                    label="📊 Master Data (Excel)",
-                    data=ke_excel(df_clean),
-                    file_name="master_data_armada.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with col_d2:
-                st.download_button(
-                    label="📈 Statistik Armada (CSV)",
-                    data=ke_csv(stat_armada),
-                    file_name="statistik_armada.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            with col_d3:
-                pilihan_grafik = st.selectbox("Pilih grafik", ["Trip Terbanyak", "Distribusi Jenis", "Tonase Terbesar", "Waktu Tempuh per Jenis"])
-                fig_download = None
-                if pilihan_grafik == "Trip Terbanyak":
-                    fig_download = st.session_state.fig1
-                elif pilihan_grafik == "Distribusi Jenis":
-                    fig_download = st.session_state.fig2
-                elif pilihan_grafik == "Tonase Terbesar":
-                    fig_download = st.session_state.fig3
-                else:
-                    fig_download = st.session_state.fig4
-
-                if fig_download is not None:
-                    png_data = grafik_ke_png(fig_download)
-                    if png_data:
-                        st.download_button(
-                            label="📸 Unduh Grafik (PNG)",
-                            data=png_data,
-                            file_name=f"grafik_{pilihan_grafik.lower().replace(' ', '_')}.png",
-                            mime="image/png",
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning("Grafik tidak dapat diunduh (kaleido tidak terinstal).")
-                else:
-                    st.warning("Proses data terlebih dahulu.")
-
-            with col_d4:
+            # --- DOWNLOAD SECTION ---
+            st.markdown("## 📥 Unduh Hasil")
+            col_dl1, col_dl2, col_dl3, col_dl4 = st.columns(4)
+            with col_dl1:
+                # Master Data Excel
+                @st.cache_data
+                def to_excel(df):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='Master Data')
+                    return output.getvalue()
+                st.download_button("📊 Master Data (Excel)", data=to_excel(df), file_name="master_data_dlh.xlsx")
+            with col_dl2:
+                # Statistik CSV
+                csv = df.describe().to_csv().encode('utf-8')
+                st.download_button("📈 Statistik (CSV)", data=csv, file_name="statistik.csv")
+            with col_dl3:
+                # Grafik PNG (pilih)
+                pilihan = st.selectbox("Pilih grafik", ["Tren Ritase", "Tonase per Kecamatan", "Jam Sibuk", "Top Armada"])
+                fig = None
+                if pilihan == "Tren Ritase" and 'tren' in st.session_state.figures:
+                    fig = st.session_state.figures['tren']
+                elif pilihan == "Tonase per Kecamatan" and 'kec' in st.session_state.figures:
+                    fig = st.session_state.figures['kec']
+                elif pilihan == "Jam Sibuk" and 'jam' in st.session_state.figures:
+                    fig = st.session_state.figures['jam']
+                elif pilihan == "Top Armada" and 'top' in st.session_state.figures:
+                    fig = st.session_state.figures['top']
+                if fig:
+                    try:
+                        png = pio.to_image(fig, format='png', scale=2)
+                        st.download_button("📸 Unduh Grafik", data=png, file_name=f"{pilihan}.png", mime="image/png")
+                    except:
+                        st.warning("Gagal mengunduh grafik (kaleido tidak terinstal).")
+            with col_dl4:
                 if st.session_state.laporan_teks:
-                    st.download_button(
-                        label="📝 Laporan AI (TXT)",
-                        data=st.session_state.laporan_teks.encode('utf-8'),
-                        file_name="laporan_ai.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                    st.download_button("📝 Laporan AI", data=st.session_state.laporan_teks, file_name="laporan_ai.txt")
                 else:
-                    st.markdown("*(Buat laporan AI dulu untuk mengunduh)*")
+                    st.write("(Buat laporan AI dulu)")
 
     else:
-        st.info("👆 Silakan unggah file Excel Anda untuk memulai.")
+        st.info("👆 Silakan unggah file Excel (format .xls atau .xlsx) untuk memulai analisis ala notebook DLH.")
         st.image("https://cdn-icons-png.flaticon.com/512/3081/3081559.png", width=150)
 
 if __name__ == "__main__":
