@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.io as pio
 from io import BytesIO
 
 # ---------- Fungsi Bantu ----------
@@ -27,7 +26,6 @@ def baca_semua_sheet(uploaded_file):
             pass
     return sheets
 
-# ---------- Fungsi Proses Data (Tugas 1 & 2) ----------
 def gabung_dan_sinkron(sheets_dict):
     """
     Menggabungkan sheet harian dan sinkronisasi dengan List Armada.
@@ -40,15 +38,13 @@ def gabung_dan_sinkron(sheets_dict):
 
     ref_dict = {}
     if armada_sheet:
-        # Gunakan dataframe dari sheets_dict, asumsikan header di baris 1 (index 1)
         df_ref_raw = sheets_dict[armada_sheet].copy()
         if len(df_ref_raw) > 1:
-            # Baris pertama sebagai header
-            new_header = df_ref_raw.iloc[0]  # ambil baris indeks 0
-            df_ref = df_ref_raw[1:]          # data mulai baris 1
+            # Baris pertama sebagai header (header=1)
+            new_header = df_ref_raw.iloc[0]
+            df_ref = df_ref_raw[1:].copy()
             df_ref.columns = [str(c).strip().upper() for c in new_header]
         else:
-            # fallback jika hanya 1 baris
             df_ref = df_ref_raw.copy()
             df_ref.columns = [str(c).strip().upper() for c in df_ref.columns]
 
@@ -60,6 +56,7 @@ def gabung_dan_sinkron(sheets_dict):
             col_kec = cari_kolom(df_ref.columns, ['KECAMATAN', 'LOKASI'])
             col_merk = cari_kolom(df_ref.columns, ['MERK'])
             col_type = cari_kolom(df_ref.columns, ['TYPE', 'TIPE'])
+            # Bangun dictionary
             for _, row in df_ref.iterrows():
                 nopin = row['NOPIN']
                 ref_dict[nopin] = {'NO.PLAT': row['NO.PLAT']}
@@ -94,11 +91,9 @@ def gabung_dan_sinkron(sheets_dict):
             skipped.append(sheet)
             continue
 
-        # Potong dataframe: baris sebelum header dibuang, header jadi nama kolom
         try:
             # Data setelah header
             df_hari = df_raw.iloc[header_idx+1:].reset_index(drop=True)
-            # Nama kolom dari baris header
             header_row = df_raw.iloc[header_idx].astype(str).str.strip().str.upper()
             df_hari.columns = [str(c).strip().upper() for c in header_row]
         except:
@@ -120,17 +115,21 @@ def gabung_dan_sinkron(sheets_dict):
         df_hari = df_hari[df_hari['NOPIN'] != '']
         df_hari['NOPIN'] = df_hari['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
 
-        # Sinkronisasi dengan master
+        # Reset index untuk menghindari duplikat
+        df_hari = df_hari.reset_index(drop=True)
+
+        # Sinkronisasi dengan master menggunakan merge (lebih aman)
         if ref_dict:
-            def sinkron(row):
-                nopin = row['NOPIN']
-                if nopin in ref_dict:
-                    row['NO_PLAT'] = ref_dict[nopin]['NO.PLAT']
-                    for key in ['Kecamatan', 'MERK', 'TYPE']:
-                        if key in ref_dict[nopin]:
-                            row[key] = ref_dict[nopin][key]
-                return row
-            df_hari = df_hari.apply(sinkron, axis=1)
+            # Buat DataFrame dari ref_dict
+            df_ref = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN'})
+            # Kolom yang akan diambil dari referensi
+            cols_from_ref = ['NOPIN', 'NO.PLAT'] + [c for c in ['Kecamatan', 'MERK', 'TYPE'] if c in df_ref.columns]
+            # Hapus dulu kolom yang akan diupdate dari df_hari untuk menghindari bentrok
+            for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
+                if col in df_hari.columns:
+                    df_hari.drop(columns=[col], inplace=True)
+            # Merge left
+            df_hari = df_hari.merge(df_ref[cols_from_ref], on='NOPIN', how='left')
 
         # Tambah kolom tanggal
         try:
@@ -159,7 +158,7 @@ def hitung_trip_tonase(df_master):
     for c in ['Kecamatan', 'TYPE', 'MERK']:
         if c in df_master.columns:
             group_cols.append(c)
-    df_armada = df_master.groupby(group_cols).agg(
+    df_armada = df_master.groupby(group_cols, dropna=False).agg(
         Total_Trip=('NOPIN', 'count'),
         Total_Tonase=(col_netto, 'sum')
     ).reset_index().sort_values('Total_Trip', ascending=False)
@@ -169,6 +168,7 @@ def armada_ekstrem(df_armada):
     if df_armada.empty:
         return None, None
     teraktif = df_armada.iloc[0]
+    # Armada dengan trip paling sedikit (tapi >0)
     tidak_efisien = df_armada[df_armada['Total_Trip'] > 0].iloc[-1] if any(df_armada['Total_Trip'] > 0) else df_armada.iloc[-1]
     return teraktif, tidak_efisien
 
@@ -181,7 +181,7 @@ def waktu_per_jenis(df_master):
         df_master['DURASI_MENIT'] = (df_master['KELUAR_DT'] - df_master['MASUK_DT']).dt.total_seconds() / 60
         df_valid = df_master[(df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)]
         if 'TYPE' in df_valid.columns:
-            df_waktu = df_valid.groupby('TYPE')['DURASI_MENIT'].mean().reset_index()
+            df_waktu = df_valid.groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
             df_waktu.columns = ['Jenis Armada', 'Rata2 Waktu Tempuh (menit)']
             return df_waktu
     return pd.DataFrame()
@@ -196,7 +196,7 @@ for key, default in [("step", 0), ("sheets_dict", None), ("df_master", None),
 
 # ---------- Aplikasi Utama ----------
 def main():
-    st.title("🚛 Dashboard Armada DLH – Proses Bertahap")
+    st.title("🚛 Dashboard Armada DLH – Proses Bertahap (Anti Error)")
     st.markdown("Unggah file Excel, lalu klik **Mulai/Ulangi Proses**. Ikuti langkah-langkah untuk melihat setiap tahap analisis.")
 
     uploaded_file = st.file_uploader("📂 Pilih file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -298,12 +298,12 @@ def main():
                 col_netto = st.session_state.col_netto
                 if col_netto:
                     # Tren harian
-                    tren = df.groupby('TANGGAL').size().reset_index(name='Ritase')
+                    tren = df.groupby('TANGGAL', dropna=False).size().reset_index(name='Ritase')
                     fig1 = px.line(tren, x='TANGGAL', y='Ritase', title='Tren Ritase Harian', markers=True)
                     st.plotly_chart(fig1, use_container_width=True)
                     # Kecamatan
                     if 'Kecamatan' in df.columns:
-                        kec = df.groupby('Kecamatan')[col_netto].sum().reset_index(name='Tonase')
+                        kec = df.groupby('Kecamatan', dropna=False)[col_netto].sum().reset_index(name='Tonase')
                         fig2 = px.bar(kec.sort_values('Tonase', ascending=False), x='Kecamatan', y='Tonase', color='Tonase', color_continuous_scale='Viridis')
                         st.plotly_chart(fig2, use_container_width=True)
                     # Top Armada
