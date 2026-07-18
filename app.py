@@ -18,6 +18,18 @@ def normalisasi_nopin(val):
         return ''
     return re.sub(r'[^A-Z0-9]', '', str(val).upper())
 
+def normalisasi_kecamatan(val):
+    """Bersihkan dan standarkan nama kecamatan, termasuk 'Batam Kota'."""
+    if pd.isna(val) or str(val).strip() == '':
+        return 'Tidak Diketahui'
+    val = str(val).strip()
+    # Ubah ke Title Case
+    val = val.title()
+    # Perbaikan khusus untuk "Batam Kota"
+    if 'batam' in val.lower() and 'kota' in val.lower():
+        return 'Batam Kota'
+    return val
+
 def cari_kolom(daftar_kolom, kata_kunci):
     for col in daftar_kolom:
         if any(kw in str(col).upper() for kw in kata_kunci):
@@ -76,10 +88,11 @@ def proses_list_armada(sheets_dict, armada_sheet, config):
     if col_nopin_arm and col_plat_arm:
         df_ref['NOPIN_NORM'] = df_ref[col_nopin_arm].apply(normalisasi_nopin)
         df_ref['NO.PLAT'] = df_ref[col_plat_arm].astype(str).str.strip().str.upper()
+        # Bangun dictionary referensi
         for _, row in df_ref.iterrows():
             key = row['NOPIN_NORM']
             ref_dict[key] = {'NO.PLAT': row['NO.PLAT']}
-            if col_kec: ref_dict[key]['Kecamatan'] = str(row[col_kec]).strip() if pd.notna(row[col_kec]) else ''
+            if col_kec: ref_dict[key]['Kecamatan'] = normalisasi_kecamatan(row[col_kec]) if pd.notna(row[col_kec]) else 'Tidak Diketahui'
             if col_merk: ref_dict[key]['MERK'] = str(row[col_merk]).strip() if pd.notna(row[col_merk]) else ''
             if col_type: ref_dict[key]['TYPE'] = str(row[col_type]).strip() if pd.notna(row[col_type]) else ''
         ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN_NORM'})
@@ -115,6 +128,7 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     df_hari = df_hari.rename(columns={col_nopin_day: 'NOPIN', col_plat_day: 'NO_PLAT'})
 
+    # Pembersihan
     df_hari = df_hari.dropna(subset=['NOPIN'])
     df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
     df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
@@ -124,6 +138,7 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     no_plat_asli = df_hari['NO_PLAT'].copy() if 'NO_PLAT' in df_hari.columns else pd.Series('', index=df_hari.index)
 
+    # Sinkronisasi dengan master
     if ref_df is not None and not ref_df.empty:
         for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
             if col in df_hari.columns:
@@ -140,10 +155,11 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
             if col not in df_hari.columns:
                 df_hari[col] = ''
 
-    if 'Kecamatan' not in df_hari.columns:
-        df_hari['Kecamatan'] = 'Tidak Diketahui'
+    # Normalisasi dan isi kecamatan
+    if 'Kecamatan' in df_hari.columns:
+        df_hari['Kecamatan'] = df_hari['Kecamatan'].apply(normalisasi_kecamatan)
     else:
-        df_hari['Kecamatan'] = df_hari['Kecamatan'].fillna('Tidak Diketahui').replace('', 'Tidak Diketahui')
+        df_hari['Kecamatan'] = 'Tidak Diketahui'
 
     try:
         tgl = f"2026-06-{int(sheet):02d}"
@@ -247,11 +263,19 @@ def proses_data(sheets_dict, config):
 
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
-    key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT']
+    # --- PEMBERSIHAN DUPLIKAT (termasuk "Batam Kota") ---
+    # Normalisasi ulang kecamatan untuk jaga-jaga
+    if 'Kecamatan' in df_master.columns:
+        df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
+
+    # Tentukan kolom kunci untuk identifikasi duplikat
+    key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
         key_cols.append(ton_col)
+    # Hapus duplikat
     df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
+    # ------------------------------------------------------
 
     if ton_col:
         df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
@@ -288,7 +312,6 @@ def buat_ringkasan_eksekutif(data):
     teraktif = data['teraktif']
     tidak_efisien = data['tidak_efisien']
 
-    # Ambil periode dari data
     if 'TANGGAL' in df.columns:
         df['TANGGAL_DT'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
         valid_dates = df['TANGGAL_DT'].dropna()
@@ -310,7 +333,6 @@ def buat_ringkasan_eksekutif(data):
         kec_tertinggi = "N/A"
         tonase_tertinggi = 0
 
-    # 5 armada dengan trip terendah untuk rekomendasi pemeliharaan
     if not df_armada.empty:
         terbawah = df_armada.sort_values('Total_Trip', ascending=True).head(5)
         list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()])
@@ -398,7 +420,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t2)
         story.append(Spacer(1, 12))
 
-    # Grafik
     temp_files = []
     story.append(Paragraph("Visualisasi Data", heading_style))
     for key, fig in grafik_dict.items():
@@ -410,14 +431,11 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
                 story.append(Spacer(1, 12))
 
     doc.build(story)
-
-    # Hapus file sementara setelah PDF selesai
     for f in temp_files:
         try:
             os.unlink(f)
         except Exception:
             pass
-
     buffer.seek(0)
     return buffer
 
@@ -434,7 +452,7 @@ if "grafik" not in st.session_state:
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Data duplikat akan dibersihkan otomatis.")
+st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Duplikasi data (termasuk varian 'Batam Kota') akan dibersihkan otomatis.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -505,7 +523,7 @@ with st.sidebar:
                     st.error("Gagal memproses data. Periksa sheet/kolom yang dipilih.")
                 else:
                     st.session_state.hasil = hasil
-                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil digabung. {len(hasil['skipped'])} sheet dilewati. Duplikat telah dibersihkan.")
+                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil digabung. Duplikat telah dibersihkan, termasuk varian 'Batam Kota'.")
                     st.balloons()
 
 # Tampilkan hasil
@@ -524,6 +542,7 @@ if st.session_state.hasil is not None:
     st.sidebar.markdown("---")
     st.sidebar.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
+        # Semua kecamatan ditampilkan, termasuk "Tidak Diketahui" dan "Batam Kota"
         daftar_kec = sorted(df_master['Kecamatan'].unique().tolist())
         kec_terpilih = st.sidebar.selectbox("Pilih Kecamatan", daftar_kec)
         df_kec_filter = df_master[df_master['Kecamatan'] == kec_terpilih]
