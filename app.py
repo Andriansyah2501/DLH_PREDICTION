@@ -4,7 +4,7 @@ import numpy as np
 import plotly.express as px
 from io import BytesIO
 
-# -------------------------- Fungsi Bantu --------------------------
+# ---------- FUNGSI BANTU ----------
 def cari_kolom(daftar_kolom, kata_kunci):
     for col in daftar_kolom:
         if any(kw in str(col).upper() for kw in kata_kunci):
@@ -20,7 +20,7 @@ def baca_semua_sheet(uploaded_file):
             df = pd.read_excel(xls, sheet_name=name)
             if not df.empty:
                 sheets[name] = df
-        except Exception:
+        except:
             pass
     return sheets
 
@@ -52,16 +52,27 @@ def proses_data_armada(sheets_dict):
         if col_nopin and col_plat:
             df_ref['NOPIN'] = df_ref[col_nopin].astype(str).str.strip().str.upper()
             df_ref['NO.PLAT'] = df_ref[col_plat].astype(str).str.strip().str.upper()
-            col_kec = cari_kolom(df_ref.columns, ['KECAMATAN', 'LOKASI'])
-            col_merk = cari_kolom(df_ref.columns, ['MERK'])
+            # ---- PENTING: Cari kolom kecamatan dengan lebih longgar ----
+            col_kec = cari_kolom(df_ref.columns, ['KECAMATAN', 'LOKASI KECAMATAN', 'LOKASI', 'KEC'])
+            col_merk = cari_kolom(df_ref.columns, ['MERK', 'MEREK'])
             col_type = cari_kolom(df_ref.columns, ['TYPE', 'TIPE'])
+            # Bangun dictionary referensi
             for _, row in df_ref.iterrows():
                 nopin = row['NOPIN']
                 ref_dict[nopin] = {'NO.PLAT': row['NO.PLAT']}
-                if col_kec: ref_dict[nopin]['Kecamatan'] = str(row[col_kec]).strip()
-                if col_merk: ref_dict[nopin]['MERK'] = str(row[col_merk]).strip()
-                if col_type: ref_dict[nopin]['TYPE'] = str(row[col_type]).strip()
+                if col_kec:
+                    ref_dict[nopin]['Kecamatan'] = str(row[col_kec]).strip()
+                if col_merk:
+                    ref_dict[nopin]['MERK'] = str(row[col_merk]).strip()
+                if col_type:
+                    ref_dict[nopin]['TYPE'] = str(row[col_type]).strip()
+            # DataFrame referensi (untuk merge)
             ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN'})
+            # Debug: tampilkan info kolom kecamatan jika tidak ditemukan
+            if not col_kec:
+                st.warning("Kolom Kecamatan tidak ditemukan di List Armada. Data kecamatan tidak akan disinkronkan.")
+        else:
+            st.warning("Kolom NOPIN / Plat tidak ditemukan di List Armada. Sinkronisasi dibatalkan.")
 
     # ---- 2. Proses sheet harian ----
     daily_sheets = [s for s in sheets_dict if s.isdigit()]
@@ -72,15 +83,14 @@ def proses_data_armada(sheets_dict):
 
     cleaned = {}
     skipped = []
-
     for sheet in daily_sheets:
         try:
             df_raw = sheets_dict[sheet].copy()
-        except Exception:
+        except:
             skipped.append(sheet)
             continue
 
-        # Cari header (baris yang mengandung PINTU / PLAT MOBIL / NOPIN)
+        # Cari header (baris dengan PINTU, PLAT MOBIL, atau NOPIN)
         header_idx = None
         for idx, row in df_raw.iterrows():
             row_str = " ".join(row.astype(str).dropna().str.upper().values)
@@ -95,7 +105,7 @@ def proses_data_armada(sheets_dict):
             df_hari = df_raw.iloc[header_idx+1:].reset_index(drop=True)
             header_row = df_raw.iloc[header_idx].astype(str).str.strip().str.upper()
             df_hari.columns = [str(c).strip().upper() for c in header_row]
-        except Exception:
+        except:
             skipped.append(sheet)
             continue
 
@@ -129,28 +139,27 @@ def proses_data_armada(sheets_dict):
                 if col not in df_hari.columns:
                     df_hari[col] = ''
 
-        # Pastikan Kecamatan terisi – jika kosong isi "Tidak Diketahui"
+        # Isi kecamatan yang masih kosong dengan 'Tidak Diketahui'
         if 'Kecamatan' not in df_hari.columns:
             df_hari['Kecamatan'] = 'Tidak Diketahui'
         else:
             df_hari['Kecamatan'] = df_hari['Kecamatan'].fillna('Tidak Diketahui').replace('', 'Tidak Diketahui')
 
-        # Tambah kolom TANGGAL
+        # Tambah TANGGAL
         try:
             tgl = f"2026-06-{int(sheet):02d}"
         except:
             tgl = sheet
         df_hari['TANGGAL'] = tgl
 
-        # Hapus duplikasi kolom (jika ada)
+        # Hapus duplikasi kolom
         df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
-
         cleaned[sheet] = df_hari
 
     if not cleaned:
         return None
 
-    # Gabungkan semua DataFrame yang sudah bersih
+    # Gabungkan semua DataFrame
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
     # Konversi numerik kolom tonase
@@ -159,7 +168,7 @@ def proses_data_armada(sheets_dict):
         df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
     col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
 
-    # Analisis waktu (jika kolom jam tersedia)
+    # Analisis waktu
     col_masuk = cari_kolom(df_master.columns, ['MASUK', 'JAM_1', 'TIMBANG1'])
     col_keluar = cari_kolom(df_master.columns, ['KELUAR', 'JAM_2', 'TIMBANG2'])
     if col_masuk and col_keluar:
@@ -172,7 +181,7 @@ def proses_data_armada(sheets_dict):
         except:
             pass
 
-    # Agregasi (Tugas 3 & 4)
+    # Agregasi
     df_armada = pd.DataFrame()
     if col_netto:
         group_cols = ['NOPIN', 'NO_PLAT']
@@ -187,13 +196,12 @@ def proses_data_armada(sheets_dict):
     teraktif = df_armada.iloc[0] if not df_armada.empty else None
     tidak_efisien = df_armada[df_armada['Total_Trip'] > 0].iloc[-1] if not df_armada.empty and (df_armada['Total_Trip'] > 0).any() else None
 
-    # Rata‑rata waktu per jenis armada (Tugas 5)
     df_waktu = pd.DataFrame()
     if 'DURASI_MENIT' in df_master.columns and 'TYPE' in df_master.columns:
         df_waktu = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
         df_waktu.columns = ['Jenis Armada', 'Rata2 Waktu Tempuh (menit)']
 
-    # Agregasi per kecamatan (tampilkan SEMUA kecamatan)
+    # Agregasi per kecamatan (SELURUH kecamatan akan muncul)
     df_kec = pd.DataFrame()
     if 'Kecamatan' in df_master.columns and col_netto:
         df_kec = df_master.groupby('Kecamatan', dropna=False).agg(
@@ -201,7 +209,6 @@ def proses_data_armada(sheets_dict):
             Total_Tonase=(col_netto, 'sum')
         ).reset_index().sort_values('Total_Ritase', ascending=False)
 
-    # Tren harian
     df_tren = pd.DataFrame()
     if col_netto:
         df_tren = df_master.groupby('TANGGAL', dropna=False).agg(
@@ -222,14 +229,18 @@ def proses_data_armada(sheets_dict):
         'cleaned_count': len(cleaned)
     }
 
-# -------------------------- Session State --------------------------
+# ---------- SESSION STATE ----------
 if "hasil" not in st.session_state:
     st.session_state.hasil = None
 
-# -------------------------- Antarmuka Streamlit --------------------------
+# ---------- ANTARMUKA ----------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel (berisi sheet **List Armada** dan 30 sheet harian). Seluruh analisis dijalankan otomatis.")
+st.markdown("""
+Unggah file Excel (berisi sheet **List Armada** dan 30 sheet harian).  
+Data kecamatan diambil dari kolom **`Lokasi KECAMATAN`** di sheet List Armada.  
+Armada yang tidak tercatat di List Armada akan diberi keterangan **"Tidak Diketahui"**.
+""")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -248,7 +259,6 @@ with st.sidebar:
                         st.success(f"✅ {hasil['cleaned_count']} sheet harian berhasil digabung. {len(hasil['skipped'])} sheet dilewati.")
                         st.balloons()
 
-# Tampilkan hasil jika sudah diproses
 if st.session_state.hasil is not None:
     data = st.session_state.hasil
     df = data['df_master']
@@ -258,7 +268,6 @@ if st.session_state.hasil is not None:
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filter Data")
     if 'Kecamatan' in df.columns:
-        # Semua kecamatan termasuk "Tidak Diketahui" akan muncul
         kec_list = ['Semua'] + sorted(df['Kecamatan'].unique().tolist())
         kec_terpilih = st.sidebar.selectbox("Kecamatan", kec_list)
     else:
@@ -316,7 +325,6 @@ if st.session_state.hasil is not None:
         fig1.update_traces(line_color='#0D9488')
         st.plotly_chart(fig1, use_container_width=True)
 
-        # Distribusi per Kecamatan – menampilkan SEMUA kecamatan
         if 'Kecamatan' in df_filter.columns:
             kec = df_filter.groupby('Kecamatan', dropna=False)[col_netto].sum().reset_index(name='Tonase')
             kec = kec.sort_values('Tonase', ascending=False)
@@ -390,4 +398,3 @@ if st.session_state.hasil is not None:
 
 else:
     st.info("👆 Silakan unggah file Excel dan klik **Proses Data** untuk memulai analisis.")
-    st.image("https://cdn-icons-png.flaticon.com/512/3081/3081559.png", width=150)
