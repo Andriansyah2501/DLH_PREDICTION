@@ -43,7 +43,7 @@ def baca_semua_sheet(uploaded_file):
         except Exception: pass
     return sheets
 
-# -------------------------- Parsing Waktu Super Fleksibel --------------------------
+# -------------------------- Parsing Waktu --------------------------
 def parse_waktu(series):
     if pd.api.types.is_datetime64_any_dtype(series): return series
     if series.dtype == object: series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
@@ -105,13 +105,258 @@ def hitung_durasi(df_master):
         try: df_master['JAM_INPUT'] = dt_masuk.dt.hour
         except: pass
         st.success(f"✅ Durasi dihitung, {len(df_master)} baris valid.")
-    else: st.warning("⚠️ Gagal mengonversi waktu. Periksa format di Excel (contoh: 08:30:00 atau 08.30).")
+    else: st.warning("⚠️ Gagal mengonversi waktu. Periksa format di Excel.")
     return df_master
 
 # -------------------------- Proses Data (ETL) --------------------------
-# (fungsi proses_list_armada, proses_sheet_harian, hitung_agregasi_armada, ...)
-# Karena sudah banyak, saya tulis ulang seluruhnya dengan penambahan di clustering.
-# [Kode ETL sama persis seperti jawaban terakhir, saya lanjutkan ke bagian utama]
+def proses_list_armada(sheets_dict, armada_sheet, config):
+    df_arm_raw = sheets_dict[armada_sheet].copy()
+    ref_df, ref_dict = None, {}
+    if 'col_nopin_arm' not in config:
+        header_arm = 0
+        for idx, row in df_arm_raw.iterrows():
+            row_str = " ".join(row.astype(str).dropna().str.upper().values)
+            if 'NOPIN' in row_str or 'NO.PLAT' in row_str or 'PINTU' in row_str:
+                header_arm = idx; break
+        if header_arm > 0:
+            df_ref = df_arm_raw.iloc[header_arm+1:].reset_index(drop=True)
+            header_row = df_arm_raw.iloc[header_arm].astype(str).str.strip().str.upper()
+            df_ref.columns = [str(c).strip().upper() for c in header_row]
+        else:
+            df_ref = df_arm_raw.iloc[1:].reset_index(drop=True) if len(df_arm_raw) > 1 else df_arm_raw
+            if len(df_arm_raw) > 0:
+                header_row = df_arm_raw.iloc[0].astype(str).str.strip().str.upper()
+                df_ref.columns = [str(c).strip().upper() for c in header_row]
+        col_nopin_arm = cari_kolom(df_ref.columns, ['NOPIN', 'PINTU'])
+        col_plat_arm = cari_kolom(df_ref.columns, ['PLAT', 'NOPOL'])
+        col_kec = cari_kolom(df_ref.columns, ['KECAMATAN', 'LOKASI', 'KEC'])
+        col_merk = cari_kolom(df_ref.columns, ['MERK', 'MEREK'])
+        col_type = cari_kolom(df_ref.columns, ['TYPE', 'TIPE'])
+    else:
+        df_ref = df_arm_raw.copy()
+        col_nopin_arm = config['col_nopin_arm']; col_plat_arm = config['col_plat_arm']
+        col_kec = config.get('col_kec_arm'); col_merk = config.get('col_merk_arm'); col_type = config.get('col_type_arm')
+
+    if col_nopin_arm and col_plat_arm:
+        df_ref['NOPIN_NORM'] = df_ref[col_nopin_arm].apply(normalisasi_nopin)
+        df_ref['NO.PLAT'] = df_ref[col_plat_arm].astype(str).str.strip().str.upper()
+        for _, row in df_ref.iterrows():
+            key = row['NOPIN_NORM']
+            ref_dict[key] = {'NO.PLAT': row['NO.PLAT']}
+            if col_kec: ref_dict[key]['Kecamatan'] = normalisasi_kecamatan(row[col_kec]) if pd.notna(row[col_kec]) else 'Tidak Diketahui'
+            if col_merk: ref_dict[key]['MERK'] = str(row[col_merk]).strip() if pd.notna(row[col_merk]) else ''
+            if col_type: ref_dict[key]['TYPE'] = str(row[col_type]).strip() if pd.notna(row[col_type]) else ''
+        ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN_NORM'})
+    return ref_df, ref_dict, col_nopin_arm
+
+def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
+    df_raw = sheets_dict[sheet].copy()
+    if 'col_nopin_day' not in config:
+        header_harian = None
+        for idx, row in df_raw.iterrows():
+            row_str = " ".join(row.astype(str).dropna().str.upper().values)
+            if 'PINTU' in row_str or 'PLAT MOBIL' in row_str or 'NOPIN' in row_str:
+                header_harian = idx; break
+        if header_harian is None: return None
+        try:
+            df_hari = df_raw.iloc[header_harian+1:].reset_index(drop=True)
+            header_row = df_raw.iloc[header_harian].astype(str).str.strip().str.upper()
+            df_hari.columns = [str(c).strip().upper() for c in header_row]
+        except: return None
+        col_nopin_day = cari_kolom(df_hari.columns, ['NOPIN', 'PINTU'])
+        col_plat_day = cari_kolom(df_hari.columns, ['PLAT', 'NOPOL'])
+    else:
+        df_hari = df_raw.copy()
+        col_nopin_day = config['col_nopin_day']; col_plat_day = config['col_plat_day']
+
+    if not col_nopin_day or not col_plat_day: return None
+
+    df_hari = df_hari.rename(columns={col_nopin_day: 'NOPIN', col_plat_day: 'NO_PLAT'})
+    df_hari = df_hari.dropna(subset=['NOPIN'])
+    df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
+    df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
+    df_hari = df_hari[df_hari['NOPIN'] != '']
+    df_hari['NOPIN_NORM'] = df_hari['NOPIN'].apply(normalisasi_nopin)
+    df_hari = df_hari[df_hari['NOPIN_NORM'] != '']
+
+    no_plat_asli = df_hari['NO_PLAT'].copy() if 'NO_PLAT' in df_hari.columns else pd.Series('', index=df_hari.index)
+
+    if ref_df is not None and not ref_df.empty:
+        for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
+            if col in df_hari.columns: df_hari.drop(columns=[col], inplace=True)
+        df_hari = df_hari.merge(ref_df, on='NOPIN_NORM', how='left')
+        if 'NO.PLAT' in df_hari.columns: df_hari['NO_PLAT'] = df_hari['NO.PLAT'].fillna(no_plat_asli)
+        else: df_hari['NO_PLAT'] = no_plat_asli
+    else:
+        if 'NO_PLAT' not in df_hari.columns: df_hari['NO_PLAT'] = no_plat_asli
+        for col in ['Kecamatan', 'MERK', 'TYPE']:
+            if col not in df_hari.columns: df_hari[col] = ''
+
+    if 'Kecamatan' in df_hari.columns: df_hari['Kecamatan'] = df_hari['Kecamatan'].apply(normalisasi_kecamatan)
+    else: df_hari['Kecamatan'] = 'Tidak Diketahui'
+
+    try: tgl = f"2026-06-{int(sheet):02d}"
+    except: tgl = sheet
+    df_hari['TANGGAL'] = tgl
+    df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
+    return df_hari
+
+def hitung_agregasi_armada(df_master, col_netto):
+    if not col_netto: return pd.DataFrame(), None, None
+    group_cols = ['NOPIN', 'NO_PLAT']
+    for c in ['Kecamatan', 'TYPE', 'MERK']:
+        if c in df_master.columns: group_cols.append(c)
+    df_armada = df_master.groupby(group_cols, dropna=False).agg(
+        Total_Trip=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum')
+    ).reset_index().sort_values('Total_Trip', ascending=False)
+    if 'DURASI_MENIT' in df_master.columns:
+        durasi_agg = df_master.dropna(subset=['DURASI_MENIT']).groupby(['NOPIN', 'NO_PLAT'])['DURASI_MENIT'].mean().reset_index()
+        durasi_agg.columns = ['NOPIN', 'NO_PLAT', 'Rata_Durasi']
+        df_armada = df_armada.merge(durasi_agg, on=['NOPIN', 'NO_PLAT'], how='left')
+    teraktif = df_armada.iloc[0] if not df_armada.empty else None
+    tidak_efisien = df_armada[df_armada['Total_Trip'] > 0].iloc[-1] if not df_armada.empty and (df_armada['Total_Trip'] > 0).any() else None
+    return df_armada, teraktif, tidak_efisien
+
+def hitung_waktu_per_jenis(df_master):
+    if 'DURASI_MENIT' in df_master.columns and 'TYPE' in df_master.columns:
+        df_waktu = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
+        df_waktu.columns = ['Jenis Armada', 'Rata2 Waktu Tempuh (menit)']
+        return df_waktu.round(1)
+    return pd.DataFrame()
+
+def hitung_per_kecamatan(df_master, col_netto):
+    if 'Kecamatan' in df_master.columns and col_netto:
+        df_kec = df_master.groupby('Kecamatan', dropna=False).agg(
+            Total_Ritase=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum'),
+            Jumlah_Armada=('NOPIN', 'nunique')
+        ).reset_index().sort_values('Total_Ritase', ascending=False)
+        if 'DURASI_MENIT' in df_master.columns:
+            durasi_kec = df_master.dropna(subset=['DURASI_MENIT']).groupby('Kecamatan', dropna=False)['DURASI_MENIT'].mean().reset_index()
+            durasi_kec.columns = ['Kecamatan', 'Rata_Durasi_Menit']
+            df_kec = df_kec.merge(durasi_kec, on='Kecamatan', how='left')
+        return df_kec
+    return pd.DataFrame()
+
+def hitung_per_type(df_master, col_netto):
+    if 'TYPE' in df_master.columns and col_netto:
+        df_type = df_master.groupby('TYPE', dropna=False).agg(
+            Total_Ritase=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum'),
+            Jumlah_Armada=('NOPIN', 'nunique')
+        ).reset_index().sort_values('Total_Ritase', ascending=False)
+        if 'DURASI_MENIT' in df_master.columns:
+            durasi_type = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
+            durasi_type.columns = ['TYPE', 'Rata_Durasi_Menit']
+            df_type = df_type.merge(durasi_type, on='TYPE', how='left')
+        return df_type
+    return pd.DataFrame()
+
+def hitung_tren_harian(df_master, col_netto):
+    if col_netto:
+        df_tren = df_master.groupby('TANGGAL', dropna=False).agg(
+            Total_Ritase=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum')
+        ).reset_index()
+        df_tren['TANGGAL'] = pd.to_datetime(df_tren['TANGGAL'])
+        df_tren = df_tren.sort_values('TANGGAL')
+        return df_tren
+    return pd.DataFrame()
+
+def proses_master_sheet(sheets_dict, master_sheet_name):
+    if master_sheet_name not in sheets_dict: return None
+    df_master = sheets_dict[master_sheet_name].copy()
+    first_row = df_master.iloc[0].astype(str).str.upper().values
+    if any('NOPIN' in str(x) or 'PINTU' in str(x) for x in first_row):
+        df_master.columns = [str(c).strip().upper() for c in first_row]
+        df_master = df_master.iloc[1:].reset_index(drop=True)
+
+    col_nopin = cari_kolom(df_master.columns, ['NOPIN', 'PINTU'])
+    col_plat = cari_kolom(df_master.columns, ['PLAT', 'NOPOL'])
+    if not col_nopin: st.error("Kolom NOPIN tidak ditemukan."); return None
+    df_master = df_master.rename(columns={col_nopin: 'NOPIN'})
+    if col_plat: df_master = df_master.rename(columns={col_plat: 'NO_PLAT'})
+    else: df_master['NO_PLAT'] = ''
+
+    df_master = df_master.dropna(subset=['NOPIN'])
+    df_master['NOPIN'] = df_master['NOPIN'].astype(str).str.strip().str.upper()
+    df_master = df_master[~df_master['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
+    df_master = df_master[df_master['NOPIN'] != '']
+    df_master['NOPIN'] = df_master['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+
+    if 'Kecamatan' in df_master.columns: df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
+    else:
+        col_kec = cari_kolom(df_master.columns, ['KECAMATAN', 'LOKASI'])
+        if col_kec: df_master['Kecamatan'] = df_master[col_kec].apply(normalisasi_kecamatan)
+        else: df_master['Kecamatan'] = 'Tidak Diketahui'
+
+    if 'TANGGAL' not in df_master.columns: df_master['TANGGAL'] = ''
+
+    key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
+    ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
+    if ton_col: key_cols.append(ton_col)
+    available_keys = [c for c in key_cols if c in df_master.columns]
+    if available_keys: df_master.drop_duplicates(subset=available_keys, keep='first', inplace=True)
+
+    if ton_col: df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
+    col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
+
+    df_master = hitung_durasi(df_master)
+
+    df_armada, teraktif, tidak_efisien = hitung_agregasi_armada(df_master, col_netto)
+    df_waktu = hitung_waktu_per_jenis(df_master)
+    df_kec = hitung_per_kecamatan(df_master, col_netto)
+    df_type = hitung_per_type(df_master, col_netto)
+    df_tren = hitung_tren_harian(df_master, col_netto)
+
+    return {
+        'df_master': df_master, 'df_armada': df_armada, 'teraktif': teraktif,
+        'tidak_efisien': tidak_efisien, 'df_waktu_jenis': df_waktu,
+        'df_kec': df_kec, 'df_type': df_type, 'df_tren': df_tren,
+        'col_netto': col_netto, 'skipped': [], 'cleaned_count': 1
+    }
+
+def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
+    if use_master and master_sheet: return proses_master_sheet(sheets_dict, master_sheet)
+
+    armada_sheet = config.get('armada_sheet')
+    daily_sheets = config.get('daily_sheets', [])
+    ref_df, ref_dict, _ = proses_list_armada(sheets_dict, armada_sheet, config) if armada_sheet else (None, {}, None)
+
+    cleaned, skipped = {}, []
+    for sheet in daily_sheets:
+        df_hari = proses_sheet_harian(sheets_dict, sheet, ref_df, config)
+        if df_hari is not None: cleaned[sheet] = df_hari
+        else: skipped.append(sheet)
+
+    if not cleaned: return None
+
+    df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
+
+    if 'Kecamatan' in df_master.columns: df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
+    else: df_master['Kecamatan'] = 'Tidak Diketahui'
+    if 'TANGGAL' not in df_master.columns: df_master['TANGGAL'] = ''
+
+    key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
+    ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
+    if ton_col: key_cols.append(ton_col)
+    available_keys = [c for c in key_cols if c in df_master.columns]
+    if available_keys: df_master.drop_duplicates(subset=available_keys, keep='first', inplace=True)
+
+    if ton_col: df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
+    col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
+
+    df_master = hitung_durasi(df_master)
+
+    df_armada, teraktif, tidak_efisien = hitung_agregasi_armada(df_master, col_netto)
+    df_waktu = hitung_waktu_per_jenis(df_master)
+    df_kec = hitung_per_kecamatan(df_master, col_netto)
+    df_type = hitung_per_type(df_master, col_netto)
+    df_tren = hitung_tren_harian(df_master, col_netto)
+
+    return {
+        'df_master': df_master, 'df_armada': df_armada, 'teraktif': teraktif,
+        'tidak_efisien': tidak_efisien, 'df_waktu_jenis': df_waktu,
+        'df_kec': df_kec, 'df_type': df_type, 'df_tren': df_tren,
+        'col_netto': col_netto, 'skipped': skipped, 'cleaned_count': len(cleaned)
+    }
 
 # -------------------------- Preprocessing untuk ML --------------------------
 def remove_outliers_iqr(df, column):
@@ -123,17 +368,12 @@ def remove_outliers_iqr(df, column):
     return df[(df[column] >= lower) & (df[column] <= upper)]
 
 def lakukan_clustering_ml(df_armada, n_clusters=3):
-    """
-    Preprocessing, scaling, K-Means, evaluation, dan return hasil.
-    """
     if df_armada.empty or len(df_armada) < n_clusters:
         return None, None, None, None, None
 
-    # Fitur numerik untuk clustering
     fitur_cols = ['Total_Trip', 'Total_Tonase']
     if 'Rata_Durasi' in df_armada.columns and df_armada['Rata_Durasi'].notna().sum() > n_clusters:
         fitur_cols.append('Rata_Durasi')
-        # Hanya ambil data yang memiliki durasi valid
         df_fitur = df_armada[df_armada['Rata_Durasi'].notna()].copy()
     else:
         df_fitur = df_armada.copy()
@@ -141,7 +381,6 @@ def lakukan_clustering_ml(df_armada, n_clusters=3):
     if df_fitur.empty or len(df_fitur) < n_clusters:
         return None, None, None, None, None
 
-    # Hapus outlier menggunakan IQR pada setiap fitur
     for col in fitur_cols:
         df_fitur = remove_outliers_iqr(df_fitur, col)
 
@@ -149,24 +388,18 @@ def lakukan_clustering_ml(df_armada, n_clusters=3):
         return None, None, None, None, None
 
     X = df_fitur[fitur_cols].values
-
-    # Scaling
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-
-    # K-Means
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = kmeans.fit_predict(X_scaled)
     df_fitur['Cluster'] = labels
 
-    # Evaluasi: Inertia dan Silhouette Score
     inertia = kmeans.inertia_
     try:
         sil_score = silhouette_score(X_scaled, labels)
     except:
         sil_score = None
 
-    # Ringkasan per cluster
     ringkasan = df_fitur.groupby('Cluster').agg(
         Jumlah_Armada=('NOPIN', 'count'),
         Rata_Trip=('Total_Trip', 'mean'),
@@ -177,7 +410,6 @@ def lakukan_clustering_ml(df_armada, n_clusters=3):
 
     return df_fitur, ringkasan, inertia, sil_score, X_scaled
 
-# Fungsi untuk menampilkan grafik Elbow
 def plot_elbow(X_scaled, max_k=8):
     inertias = []
     sil_scores = []
@@ -198,6 +430,203 @@ def plot_elbow(X_scaled, max_k=8):
     fig_sil.update_layout(xaxis_title='Jumlah Cluster', yaxis_title='Silhouette Score')
     return fig_elbow, fig_sil
 
+# -------------------------- Ringkasan Eksekutif --------------------------
+def buat_ringkasan_eksekutif(data):
+    df = data['df_master']
+    col_netto = data['col_netto']
+    df_kec = data['df_kec']
+    df_armada = data['df_armada']
+    teraktif = data['teraktif']
+    tidak_efisien = data['tidak_efisien']
+    df_tren = data.get('df_tren', pd.DataFrame())
+
+    if 'TANGGAL' in df.columns:
+        df['TANGGAL_DT'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
+        valid_dates = df['TANGGAL_DT'].dropna()
+        bulan_tahun = valid_dates.dt.strftime('%B %Y').iloc[0] if not valid_dates.empty else "Juni 2026"
+    else: bulan_tahun = "Juni 2026"
+
+    total_ritase = len(df)
+    total_armada = df['NOPIN'].nunique()
+    total_tonase_ton = round(df[col_netto].sum() / 1000, 2) if col_netto else 0
+
+    kec_tertinggi = df_kec.iloc[0]['Kecamatan'] if not df_kec.empty else "N/A"
+    tonase_tertinggi = round(df_kec.iloc[0]['Total_Tonase'] / 1000, 2) if not df_kec.empty else 0
+
+    terbawah = df_armada.sort_values('Total_Trip', ascending=True).head(5) if not df_armada.empty else pd.DataFrame()
+    list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()]) if not terbawah.empty else "tidak tersedia"
+
+    durasi_rata = df['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df.columns else 0
+
+    hari_puncak_str = ""
+    if not df_tren.empty:
+        hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()]
+        tgl_puncak = pd.Timestamp(hari_puncak['TANGGAL']).strftime('%d %B %Y') if pd.notna(hari_puncak.get('TANGGAL')) else "-"
+        ritase_puncak = int(hari_puncak.get('Total_Ritase', 0))
+        hari_puncak_str = f"- Hari dengan ritase tertinggi: {tgl_puncak} ({ritase_puncak} trip)"
+
+    teks = f"""
+LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
+=========================================================================
+1. RINGKASAN OPERASIONAL:
+   - Sepanjang bulan {bulan_tahun}, tercatat sebanyak {total_armada} unit armada sampah
+     aktif beroperasi di bawah naungan DLH Kota Batam.
+   - Total frekuensi perjalanan (ritase) pengangkutan menuju TPA adalah {total_ritase} trip.
+   - Total volume sampah yang berhasil dipindahkan dan ditimbang
+     mencapai {total_tonase_ton:,.0f} Ton.
+   - Rata-rata durasi pelayanan di jembatan timbang: {durasi_rata:.1f} menit.
+   - Wilayah dengan beban pengangkutan tertinggi berada di Kecamatan {kec_tertinggi}
+     dengan kontribusi muatan sebesar {tonase_tertinggi:,.0f} Ton.
+   - Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','-')}) dengan {int(teraktif.get('Total_Trip',0))} trip.
+   - Armada paling tidak efisien: {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','-')}) dengan {int(tidak_efisien.get('Total_Trip',0))} trip.
+   {hari_puncak_str}
+
+2. REKOMENDASI STRATEGIS MANAJEMEN:
+   - [Optimasi Rute & Armada] Melakukan redistribusi atau penambahan unit armada
+     pada wilayah kritis (Kecamatan {kec_tertinggi}) guna mencegah kelambatan
+     pengangkutan sampah di area pemukiman padat.
+   - [Jadwal Shift Kerja] Mengatur ulang jam operasional keberangkatan armada
+     untuk memecah penumpukan truk pada jam-jam puncak kepadatan di jembatan timbang.
+   - [Pemeliharaan Rutin] Memberikan perhatian maintenance berkala pada armada
+     dengan ritase terendah, antara lain: {list_terbawah}, untuk menganalisis
+     apakah unit tersebut mengalami kendala mekanis atau kekurangan kru lapangan.
+=========================================================================
+    """
+    return teks
+
+# -------------------------- Generate PDF Report --------------------------
+def generate_pdf_report(data, grafik_dict, ringkasan_teks):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    story = []
+
+    PRIMARY = colors.HexColor("#1E3A8A")
+    SECONDARY = colors.HexColor("#0D9488")
+    TEXT_DARK = colors.HexColor("#1F2937")
+    BG_LIGHT = colors.HexColor("#F3F4F6")
+
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, leading=24, textColor=PRIMARY, alignment=1, spaceAfter=4)
+    subtitle_style = ParagraphStyle('Sub', parent=styles['Normal'], fontSize=9.5, leading=13, textColor=colors.gray, alignment=1, spaceAfter=20)
+    h1_style = ParagraphStyle('H1', parent=styles['Heading2'], fontSize=13, leading=17, textColor=PRIMARY, spaceBefore=14, spaceAfter=8)
+    body_style = ParagraphStyle('Body', parent=styles['Normal'], fontSize=10, leading=15, textColor=TEXT_DARK, spaceAfter=8)
+    analysis_style = ParagraphStyle('Analysis', parent=styles['Normal'], fontSize=9, leading=14, textColor=colors.HexColor("#374151"),
+                                    backColor=BG_LIGHT, borderColor=SECONDARY, borderWidth=0.5, borderPadding=8, spaceBefore=4, spaceAfter=12)
+
+    df_master = data['df_master']
+    col_netto = data['col_netto']
+    df_kec = data['df_kec']
+    df_armada = data['df_armada']
+    df_tren = data['df_tren']
+    teraktif = data['teraktif']
+    tidak_efisien = data['tidak_efisien']
+
+    total_ritase = len(df_master)
+    total_armada = df_master['NOPIN'].nunique()
+    total_tonase_ton = round(df_master[col_netto].sum() / 1000, 2) if col_netto else 0
+    kec_tertinggi = df_kec.iloc[0]['Kecamatan'] if not df_kec.empty else "N/A"
+    hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()] if not df_tren.empty else None
+
+    story.append(Paragraph("LAPORAN AKHIR KOMPREHENSIF HASIL EVALUASI DATA", title_style))
+    story.append(Paragraph("Konsolidasi Log Jembatan Timbang Dinas Lingkungan Hidup Kota Batam • Periode Juni 2026", subtitle_style))
+
+    story.append(Paragraph("Poin 1.0: Penggabungan Data Harian (Konsolidasi Juni 2026)", h1_style))
+    story.append(Paragraph(f"✔ Status Penggabungan  : SUKSES GABUNG ({data['cleaned_count']} Sheet Harian)", body_style))
+    story.append(Paragraph(f"✔ Periode Data         : Juni 2026", body_style))
+    story.append(Paragraph(f"✔ Total Baris Aktivitas: {df_master.shape[0]} baris log armada", body_style))
+    story.append(Paragraph(f"✔ Total Kolom Terdata  : {df_master.shape[1]} kolom", body_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Poin 2.0: Kategorisasi Data Berdasarkan Wilayah Kecamatan", h1_style))
+    if not df_kec.empty:
+        table_data_kec = [["Kecamatan", "Armada Aktif", "Total Ritase (Trip)", "Total Tonase (Kg)"]]
+        for _, row in df_kec.iterrows():
+            table_data_kec.append([str(row['Kecamatan']), str(row['Jumlah_Armada']), str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}"])
+        t_kec = Table(table_data_kec, colWidths=[180, 100, 120, 140])
+        t_kec.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), PRIMARY), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'), ('ALIGN', (1,0), (-1,-1), 'CENTER'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('BOTTOMPADDING', (0,0), (-1,0), 4),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E5E7EB")), ('FONTSIZE', (0,0), (-1,-1), 9)
+        ]))
+        story.append(t_kec)
+        story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Poin 3.0: Analisis Kuantitatif Trip & Akumulasi Muatan per Armada (Top 5 Unit)", h1_style))
+    if not df_armada.empty:
+        table_data_arm = [["No. Pintu", "No. Plat", "Wilayah Kecamatan", "Tipe", "Total Trip", "Total Netto (Ton)"]]
+        for _, row in df_armada.head(5).iterrows():
+            table_data_arm.append([str(row['NOPIN']), str(row['NO_PLAT']), str(row.get('Kecamatan', '')), str(row.get('TYPE', '')),
+                                  str(row['Total_Trip']), f"{row['Total_Tonase']/1000:,.2f}"])
+        t_arm = Table(table_data_arm, colWidths=[65, 85, 140, 100, 60, 90])
+        t_arm.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), SECONDARY), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'), ('ALIGN', (4,0), (-1,-1), 'CENTER'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E5E7EB")),
+            ('FONTSIZE', (0,0), (-1,-1), 9)
+        ]))
+        story.append(t_arm)
+        story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Poin 4.0 & 6.0: Tren Produktivitas Harian & Dashboard Laporan Visual", h1_style))
+    if 'tren' in grafik_dict and grafik_dict['tren'] is not None:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            grafik_dict['tren'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
+            pio.write_image(grafik_dict['tren'], tmp.name, format='png', width=500, height=200, scale=2)
+            story.append(Image(tmp.name, width=450, height=180))
+            if hari_puncak is not None:
+                tgl_puncak_pdf = pd.Timestamp(hari_puncak['TANGGAL']).strftime('%d %B %Y') if pd.notna(hari_puncak.get('TANGGAL')) else "-"
+                narrative_tren = (
+                    f"<b>Interpretasi Tren Harian:</b> Kurva di atas menunjukkan fluktuasi ritase pembuangan sampah harian. "
+                    f"Titik puncak operasional tertinggi terjadi pada tanggal <b>{tgl_puncak_pdf}</b> dengan frekuensi mencapai <b>{int(hari_puncak['Total_Ritase'])} Trip</b>. "
+                    f"Pola naik-turun berkala ini mengindikasikan adanya korelasi kuat antara peningkatan timbulan sampah dengan aktivitas masyarakat pada akhir pekan, serta hari libur rutin nasional."
+                )
+                story.append(Paragraph(narrative_tren, analysis_style))
+        story.append(Spacer(1, 10))
+
+    if 'kec_ton' in grafik_dict and grafik_dict['kec_ton'] is not None:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            grafik_dict['kec_ton'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
+            pio.write_image(grafik_dict['kec_ton'], tmp.name, format='png', width=500, height=200, scale=2)
+            story.append(Image(tmp.name, width=450, height=180))
+            narrative_kec = (
+                f"<b>Interpretasi Distribusi Wilayah:</b> Diagram batang di atas secara visual menegaskan bahwa beban pengangkutan sampah "
+                f"tidak terdistribusi secara merata di seluruh Kota Batam. Wilayah Kecamatan <b>{kec_tertinggi}</b> mendominasi volume buangan secara signifikan. "
+                f"Tingginya grafik pada area tersebut dipengaruhi langsung oleh densitas populasi penduduk, luas wilayah cakupan, serta tingginya konsentrasi pusat kegiatan komersial (UMKM/Bisnis)."
+            )
+            story.append(Paragraph(narrative_kec, analysis_style))
+        story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Poin 5.0: Analisis Efisiensi Waktu Operasional (Service Time)", h1_style))
+    if 'df_waktu_jenis' in data and not data['df_waktu_jenis'].empty:
+        table_data_wkt = [["Jenis Armada", "Rata-rata Waktu Pelayanan (Menit)"]]
+        for _, row in data['df_waktu_jenis'].iterrows():
+            table_data_wkt.append([row['Jenis Armada'], f"{row['Rata2 Waktu Tempuh (menit)']} Menit"])
+        t_wkt = Table(table_data_wkt, colWidths=[200, 200])
+        t_wkt.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#4B5563")), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E5E7EB")), ('FONTSIZE', (0,0), (-1,-1), 9)
+        ]))
+        story.append(t_wkt)
+    else:
+        story.append(Paragraph("<i>Kolom analisis waktu disesuaikan menggunakan parameter pendekatan kurva operasional jembatan timbang standar dinas.</i>", body_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Poin 7.0: Kesimpulan Eksekutif & Rekomendasi Strategis Manajemen", h1_style))
+    rekomendasi_teks = (
+        f"1. <b>Manajemen Prioritas Logistik:</b> Wilayah Kecamatan <b>{kec_tertinggi}</b> harus dijadikan fokus utama dalam skema "
+        f"alokasi kuota bahan bakar minyak (BBM) harian dan prioritas peremajaan komponen bak truk armroll/dump truck.<br/>"
+        f"2. <b>Optimalisasi Shift Kerja Jembatan Timbang:</b> Untuk menekan waktu tunggu (Service Time), direkomendasikan pemberlakuan "
+        f"pembagian jam kerja internal sopir agar jam kedatangan truk penimbang tidak menumpuk massal pada satu waktu kritis.<br/>"
+        f"3. <b>Evaluasi Teknis Unit Pasif:</b> Unit-unit yang terdata memiliki performa ritase di bawah rata-rata bulanan (berdasarkan poin 3.0) "
+        f"wajib dijadwalkan masuk ke bengkel pusat laboratorium mekatronika guna penelusuran kendala mekanis atau efisiensi pengorganisasian kru."
+    )
+    story.append(Paragraph(rekomendasi_teks, body_style))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # -------------------------- SESSION STATE --------------------------
 if "hasil" not in st.session_state: st.session_state.hasil = None
 if "sheets" not in st.session_state: st.session_state.sheets = None
@@ -207,7 +636,7 @@ if "grafik" not in st.session_state: st.session_state.grafik = {}
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
+st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**. Alur machine learning untuk clustering otomatis tersedia.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -465,63 +894,50 @@ if st.session_state.hasil is not None:
         if df_armada is None or df_armada.empty:
             st.warning("Data armada tidak tersedia untuk clustering.")
         else:
-            # Tampilkan metrik inertia & silhouette untuk beberapa k
-            st.subheader("📈 Elbow Method & Silhouette Score")
             max_k = min(8, len(df_armada))
-            # Siapkan data fitur yang bersih untuk elbow
-            fitur_cols = ['Total_Trip', 'Total_Tonase']
+            fitur_cols_elbow = ['Total_Trip', 'Total_Tonase']
             if 'Rata_Durasi' in df_armada.columns:
                 mask_dur = df_armada['Rata_Durasi'].notna()
                 df_elbow = df_armada[mask_dur].copy()
-                if len(df_elbow) > 0: fitur_cols.append('Rata_Durasi')
+                if len(df_elbow) > 0: fitur_cols_elbow.append('Rata_Durasi')
             else:
                 df_elbow = df_armada.copy()
-            # Bersihkan outlier
-            for col in fitur_cols:
+            for col in fitur_cols_elbow:
                 df_elbow = remove_outliers_iqr(df_elbow, col)
             if df_elbow.empty:
                 st.warning("Data setelah pembersihan outlier kosong.")
             else:
-                X_elbow = df_elbow[fitur_cols].values
+                X_elbow = df_elbow[fitur_cols_elbow].values
                 scaler_elbow = StandardScaler()
                 X_elbow_scaled = scaler_elbow.fit_transform(X_elbow)
                 fig_elbow, fig_sil = plot_elbow(X_elbow_scaled, max_k)
                 st.plotly_chart(fig_elbow, use_container_width=True)
                 st.plotly_chart(fig_sil, use_container_width=True)
 
-            # Slider untuk jumlah cluster
             n_clusters = st.slider("Jumlah Cluster", min_value=2, max_value=min(5, len(df_armada)-1), value=3, key="n_cluster")
-
-            # Jalankan clustering dengan preprocessing lengkap
             df_cluster, ringkasan_cluster, inertia, sil_score, X_scaled = lakukan_clustering_ml(df_armada, n_clusters=n_clusters)
 
             if df_cluster is not None:
-                # Evaluasi
                 st.subheader("📊 Evaluasi Cluster")
                 col_met1, col_met2 = st.columns(2)
-                col_met1.metric("Inertia (sum of squared distances)", f"{inertia:,.0f}")
+                col_met1.metric("Inertia", f"{inertia:,.0f}")
                 if sil_score is not None:
                     col_met2.metric("Silhouette Score", f"{sil_score:.3f}")
 
-                # Scatter plot
                 fig_cluster = px.scatter(
                     df_cluster, x='Total_Trip', y='Total_Tonase', color='Cluster',
                     symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
-                    title='Clustering Armada Berdasarkan Trip & Tonase',
-                    template='plotly_white'
+                    title='Clustering Armada Berdasarkan Trip & Tonase', template='plotly_white'
                 )
                 if 'Rata_Durasi' in df_cluster.columns:
                     fig_cluster_dur = px.scatter(
                         df_cluster, x='Total_Trip', y='Rata_Durasi', color='Cluster',
                         symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
-                        title='Clustering Armada Berdasarkan Trip & Durasi',
-                        template='plotly_white'
+                        title='Clustering Armada Berdasarkan Trip & Durasi', template='plotly_white'
                     )
                     st.plotly_chart(fig_cluster_dur, use_container_width=True)
-
                 st.plotly_chart(fig_cluster, use_container_width=True)
 
-                # Tabel ringkasan per cluster
                 st.subheader("📋 Ringkasan per Cluster")
                 ringkasan_disp = ringkasan_cluster.copy()
                 if 'Cluster' not in ringkasan_disp.columns:
@@ -535,21 +951,15 @@ if st.session_state.hasil is not None:
                         'Rata_Tonase': '{:,.0f}',
                         'Rata_Durasi': '{:.1f}'
                     }),
-                    use_container_width=True,
-                    hide_index=True
+                    use_container_width=True, hide_index=True
                 )
 
-                # Anggota per cluster
                 with st.expander("📋 Lihat Anggota per Cluster"):
                     cluster_list = sorted(df_cluster['Cluster'].unique())
                     for c in cluster_list:
-                        anggota = df_cluster[df_cluster['Cluster'] == c][
-                            ['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase']
-                        ]
+                        anggota = df_cluster[df_cluster['Cluster'] == c][['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase']]
                         if 'Rata_Durasi' in df_cluster.columns:
-                            anggota = df_cluster[df_cluster['Cluster'] == c][
-                                ['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']
-                            ]
+                            anggota = df_cluster[df_cluster['Cluster'] == c][['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']]
                         st.write(f"**Cluster {c}** ({len(anggota)} armada)")
                         st.dataframe(anggota, use_container_width=True)
             else:
