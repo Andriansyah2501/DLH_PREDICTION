@@ -156,6 +156,9 @@ def main():
     st.title("🚛 Dashboard Analitik & Rekomendasi Armada")
     st.markdown("Unggah file Excel dengan 30 sheet (1 List Armada + 29 Harian) atau format lainnya. Sistem akan otomatis mendeteksi dan memproses data, lalu Anda bisa **mengunduh semua hasil** di akhir.")
 
+    # Inisialisasi variabel untuk menghindari NameError
+    laporan_teks = ""
+
     with st.sidebar:
         uploaded_file = st.file_uploader("📂 Pilih file Excel", type=["xlsx", "xls"])
         if uploaded_file:
@@ -293,7 +296,8 @@ def main():
                     st.warning(f"### 🐌 Armada Paling Tidak Efisien\n**{paling_sedikit['No. Pintu']}**  \nTrip: {int(paling_sedikit['Trip'])} | Tonase: {paling_sedikit['Tonase']:,.1f}")
 
             with st.expander("📊 Lihat Data Lengkap & Statistik"):
-                st.dataframe(stat_armada.sort_values("Trip", ascending=False).style.background_gradient(subset=["Trip"], cmap="Blues").format({"Tonase": "{:,.1f}"}))
+                # Tanpa background_gradient agar tidak perlu matplotlib
+                st.dataframe(stat_armada.sort_values("Trip", ascending=False).style.format({"Tonase": "{:,.1f}"}))
 
             # Laporan AI
             st.subheader("📝 Laporan Cerdas dari DeepSeek AI")
@@ -312,13 +316,12 @@ Rata-rata waktu tempuh per jenis armada:
                 st.markdown("### 📄 Hasil Laporan")
                 st.write(laporan_teks)
             else:
-                laporan_teks = ""
                 st.info("Klik tombol di atas untuk menghasilkan laporan otomatis (API Key diperlukan).")
 
             progress_bar.progress(100, text="Selesai! Siap unduh.")
             st.success("✅ Semua data berhasil diproses! Gunakan tombol di bawah untuk mengunduh hasil.")
 
-            # ========== BAGIAN DOWNLOAD (ALA COLAB) ==========
+            # ========== BAGIAN DOWNLOAD ==========
             st.markdown("## 📥 Unduh Hasil Analisis")
             st.markdown("Pilih file yang ingin Anda unduh:")
 
@@ -357,7 +360,6 @@ Rata-rata waktu tempuh per jenis armada:
                     use_container_width=True
                 )
             with col_d3:
-                # Pilih grafik yang akan diunduh
                 pilihan_grafik = st.selectbox("Pilih grafik", ["Trip Terbanyak", "Distribusi Jenis", "Tonase Terbesar", "Waktu Tempuh per Jenis"])
                 if pilihan_grafik == "Trip Terbanyak":
                     fig_download = fig1
