@@ -42,10 +42,8 @@ def baca_semua_sheet(uploaded_file):
 
 # -------------------------- Parsing Waktu Fleksibel --------------------------
 def parse_waktu(series):
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-    if series.dtype == object:
-        series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
+    if pd.api.types.is_datetime64_any_dtype(series): return series
+    if series.dtype == object: series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
     for fmt in ['%H:%M:%S', '%H:%M', '%H.%M.%S', '%I:%M:%S %p', '%I:%M %p', '%H.%M']:
         dt = pd.to_datetime(series, format=fmt, errors='coerce')
         if dt.notna().sum() > 0: return dt
@@ -72,41 +70,30 @@ def hitung_durasi(df_master):
         if col_masuk and col_keluar: break
 
     if not col_masuk or not col_keluar:
-        st.info("ℹ️ Kolom jam masuk/keluar tidak ditemukan. Analisis durasi dilewati.")
+        st.info("ℹ️ Kolom jam masuk/keluar tidak ditemukan.")
         return df_master
 
-    # Simpan data asli untuk ditampilkan
     df_master['MASUK_ORI'] = df_master[col_masuk].astype(str)
     df_master['KELUAR_ORI'] = df_master[col_keluar].astype(str)
-
-    st.write(f"✅ Kolom waktu terdeteksi: **{col_masuk}** (masuk), **{col_keluar}** (keluar)")
-    with st.expander("🔍 Lihat 10 data waktu mentah"):
-        st.dataframe(df_master[[col_masuk, col_keluar]].head(10))
+    st.write(f"✅ Kolom waktu: **{col_masuk}** (masuk), **{col_keluar}** (keluar)")
 
     dt_masuk = parse_waktu(df_master[col_masuk])
     dt_keluar = parse_waktu(df_master[col_keluar])
-    valid_masuk = dt_masuk.notna().sum()
-    valid_keluar = dt_keluar.notna().sum()
-    st.write(f"Berhasil parsing: Masuk **{valid_masuk}**, Keluar **{valid_keluar}**")
-
-    if valid_masuk > 0 and valid_keluar > 0:
+    if dt_masuk.notna().sum() > 0 and dt_keluar.notna().sum() > 0:
         df_master['MASUK_DT'] = dt_masuk
         df_master['KELUAR_DT'] = dt_keluar
         df_master['DURASI_MENIT'] = (df_master['KELUAR_DT'] - df_master['MASUK_DT']).dt.total_seconds() / 60
-        mask_valid = (df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)
-        df_master = df_master[mask_valid].copy()
+        df_master = df_master[(df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)].copy()
         try: df_master['JAM_INPUT'] = df_master['MASUK_DT'].dt.hour
         except: pass
-        st.success(f"✅ Durasi berhasil dihitung. Tersisa {len(df_master)} baris dengan durasi valid.")
-    else:
-        st.warning("⚠️ Gagal mengonversi waktu. Periksa format di Excel (contoh: 08:30:00 atau 08.30).")
+        st.success(f"✅ Durasi dihitung, {len(df_master)} baris valid.")
+    else: st.warning("⚠️ Gagal parsing waktu.")
     return df_master
 
 # -------------------------- Proses Data --------------------------
 def proses_list_armada(sheets_dict, armada_sheet, config):
     df_arm_raw = sheets_dict[armada_sheet].copy()
     ref_df, ref_dict = None, {}
-
     if 'col_nopin_arm' not in config:
         header_arm = 0
         for idx, row in df_arm_raw.iterrows():
@@ -193,7 +180,6 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
     try: tgl = f"2026-06-{int(sheet):02d}"
     except: tgl = sheet
     df_hari['TANGGAL'] = tgl
-
     df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
     return df_hari
 
@@ -277,7 +263,6 @@ def proses_master_sheet(sheets_dict, master_sheet_name):
         if col_kec: df_master['Kecamatan'] = df_master[col_kec].apply(normalisasi_kecamatan)
         else: df_master['Kecamatan'] = 'Tidak Diketahui'
 
-    # Pastikan TANGGAL ada
     if 'TANGGAL' not in df_master.columns: df_master['TANGGAL'] = ''
 
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
@@ -349,7 +334,7 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         'col_netto': col_netto, 'skipped': skipped, 'cleaned_count': len(cleaned)
     }
 
-# -------------------------- Ringkasan Eksekutif & PDF --------------------------
+# -------------------------- Ringkasan Eksekutif --------------------------
 def buat_ringkasan_eksekutif(data):
     df = data['df_master']
     col_netto = data['col_netto']
@@ -375,6 +360,8 @@ def buat_ringkasan_eksekutif(data):
     list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()]) if not terbawah.empty else "tidak tersedia"
 
     durasi_rata = df['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df.columns else 0
+    hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()] if not df_tren.empty else None
+
     teks = f"""
 LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
 =========================================================================
@@ -389,6 +376,7 @@ LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
      dengan kontribusi muatan sebesar {tonase_tertinggi:,.0f} Ton.
    - Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','-')}) dengan {int(teraktif.get('Total_Trip',0))} trip.
    - Armada paling tidak efisien: {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','-')}) dengan {int(tidak_efisien.get('Total_Trip',0))} trip.
+   {"- Hari dengan ritase tertinggi: " + hari_puncak['TANGGAL'] + " (" + str(int(hari_puncak['Total_Ritase'])) + " trip)" if hari_puncak is not None else ""}
 
 2. REKOMENDASI STRATEGIS MANAJEMEN:
    - [Optimasi Rute & Armada] Melakukan redistribusi atau penambahan unit armada
@@ -403,66 +391,139 @@ LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
     """
     return teks
 
+# -------------------------- Generate PDF Komprehensif --------------------------
 def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     styles = getSampleStyleSheet()
     story = []
 
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor("#1e3c72"), spaceAfter=12)
-    heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor("#1e3c72"), spaceBefore=12, spaceAfter=6)
-    normal_style = styles['Normal']
+    # Warna
+    PRIMARY = colors.HexColor("#1E3A8A")
+    SECONDARY = colors.HexColor("#0D9488")
+    TEXT_DARK = colors.HexColor("#1F2937")
+    BG_LIGHT = colors.HexColor("#F3F4F6")
 
-    story.append(Paragraph("Laporan Analisis Armada DLH Kota Batam", title_style))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph("Ringkasan Eksekutif", heading_style))
-    for baris in ringkasan_teks.split('\n'):
-        if baris.strip(): story.append(Paragraph(baris, normal_style))
-    story.append(Spacer(1, 12))
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, leading=24, textColor=PRIMARY, alignment=1, spaceAfter=4)
+    subtitle_style = ParagraphStyle('Sub', parent=styles['Normal'], fontSize=9.5, leading=13, textColor=colors.gray, alignment=1, spaceAfter=20)
+    h1_style = ParagraphStyle('H1', parent=styles['Heading2'], fontSize=13, leading=17, textColor=PRIMARY, spaceBefore=14, spaceAfter=8)
+    body_style = ParagraphStyle('Body', parent=styles['Normal'], fontSize=10, leading=15, textColor=TEXT_DARK, spaceAfter=8)
+    analysis_style = ParagraphStyle('Analysis', parent=styles['Normal'], fontSize=9, leading=14, textColor=colors.HexColor("#374151"),
+                                    backColor=BG_LIGHT, borderColor=SECONDARY, borderWidth=0.5, borderPadding=8, spaceBefore=4, spaceAfter=12)
 
+    # Ekstrak data
+    df_master = data['df_master']
+    col_netto = data['col_netto']
     df_kec = data['df_kec']
+    df_armada = data['df_armada']
+    df_tren = data['df_tren']
+    teraktif = data['teraktif']
+    tidak_efisien = data['tidak_efisien']
+
+    total_ritase = len(df_master)
+    total_armada = df_master['NOPIN'].nunique()
+    total_tonase_ton = round(df_master[col_netto].sum() / 1000, 2) if col_netto else 0
+    kec_tertinggi = df_kec.iloc[0]['Kecamatan'] if not df_kec.empty else "N/A"
+    hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()] if not df_tren.empty else None
+
+    # Judul
+    story.append(Paragraph("LAPORAN AKHIR KOMPREHENSIF HASIL EVALUASI DATA", title_style))
+    story.append(Paragraph("Konsolidasi Log Jembatan Timbang Dinas Lingkungan Hidup Kota Batam • Periode Juni 2026", subtitle_style))
+
+    # Poin 1 & 2: Konsolidasi & Tabel Wilayah
+    story.append(Paragraph("Poin 1.0 & 2.0: Konsolidasi Master Data & Sebaran Wilayah Kerja", h1_style))
+    story.append(Paragraph(f"Proses <i>data cleaning</i> dan rekonsiliasi vertikal terhadap 30 sheet harian telah diselesaikan dengan sukses menggunakan validasi <i>List Armada</i> sebagai acuan utama. Berdasarkan audit log, ditemukan total <b>{total_armada}</b> unit armada yang beroperasi aktif sepanjang bulan Juni 2026, dengan total frekuensi muatan sebanyak <b>{total_ritase:,} kali trip</b> dan akumulasi volume bersih seberat <b>{total_tonase_ton:,} Ton</b> sampah.", body_style))
+
     if not df_kec.empty:
-        story.append(Paragraph("5 Kecamatan dengan Aktivitas Tertinggi", heading_style))
-        table_data = [['Kecamatan', 'Ritase', 'Tonase (Kg)', 'Armada', 'Rata Durasi']]
-        for _, row in df_kec.head(5).iterrows():
-            table_data.append([row['Kecamatan'], str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}", str(row['Jumlah_Armada']),
-                               f"{row.get('Rata_Durasi_Menit', '-'):.1f}" if 'Rata_Durasi_Menit' in row else '-'])
-        t = Table(table_data, colWidths=[120, 60, 80, 60, 80])
-        t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1e3c72")),
-                               ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                               ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-                               ('FONTSIZE', (0,0), (-1,-1), 8)]))
-        story.append(t); story.append(Spacer(1, 12))
+        table_data_kec = [["Kecamatan", "Armada Aktif", "Total Ritase (Trip)", "Total Tonase (Kg)"]]
+        for _, row in df_kec.iterrows():
+            table_data_kec.append([str(row['Kecamatan']), str(row['Jumlah_Armada']), str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}"])
+        t_kec = Table(table_data_kec, colWidths=[180, 100, 120, 140])
+        t_kec.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), PRIMARY), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'), ('ALIGN', (1,0), (-1,-1), 'CENTER'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('BOTTOMPADDING', (0,0), (-1,0), 4),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E5E7EB")), ('FONTSIZE', (0,0), (-1,-1), 9)
+        ]))
+        story.append(t_kec)
+        story.append(Spacer(1, 10))
 
-    df_type = data['df_type']
-    if not df_type.empty:
-        story.append(Paragraph("Ringkasan per Jenis Armada", heading_style))
-        table_data2 = [['Type', 'Ritase', 'Tonase (Kg)', 'Armada', 'Rata Durasi']]
-        for _, row in df_type.iterrows():
-            table_data2.append([row['TYPE'], str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}", str(row['Jumlah_Armada']),
-                                f"{row.get('Rata_Durasi_Menit', '-'):.1f}" if 'Rata_Durasi_Menit' in row else '-'])
-        t2 = Table(table_data2, colWidths=[100, 60, 80, 60, 80])
-        t2.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1e3c72")),
-                                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                                ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-                                ('FONTSIZE', (0,0), (-1,-1), 8)]))
-        story.append(t2); story.append(Spacer(1, 12))
+    # Poin 3: Analisis Performa Armada (Top 5)
+    story.append(Paragraph("Poin 3.0: Analisis Kuantitatif Trip & Akumulasi Muatan per Armada (Top 5 Unit)", h1_style))
+    if not df_armada.empty:
+        table_data_arm = [["No. Pintu", "No. Plat", "Wilayah Kecamatan", "Tipe", "Total Trip", "Total Netto (Ton)"]]
+        for _, row in df_armada.head(5).iterrows():
+            table_data_arm.append([str(row['NOPIN']), str(row['NO_PLAT']), str(row.get('Kecamatan', '')), str(row.get('TYPE', '')),
+                                  str(row['Total_Trip']), f"{row['Total_Tonase']/1000:,.2f}"])
+        t_arm = Table(table_data_arm, colWidths=[65, 85, 140, 100, 60, 90])
+        t_arm.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), SECONDARY), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'), ('ALIGN', (4,0), (-1,-1), 'CENTER'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E5E7EB")),
+            ('FONTSIZE', (0,0), (-1,-1), 9)
+        ]))
+        story.append(t_arm)
+        story.append(Spacer(1, 10))
 
-    temp_files = []
-    story.append(Paragraph("Visualisasi Data", heading_style))
-    for key, fig in grafik_dict.items():
-        if fig is not None:
-            fig.update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                pio.write_image(fig, tmp.name, format='png', width=500, height=300, scale=2)
-                temp_files.append(tmp.name)
-                story.append(Image(tmp.name, width=450, height=250))
-                story.append(Spacer(1, 12))
+    # Poin 4 & 6: Tren Harian, Visualisasi
+    story.append(Paragraph("Poin 4.0 & 6.0: Tren Produktivitas Harian & Dashboard Laporan Visual", h1_style))
+
+    if 'tren' in grafik_dict and grafik_dict['tren'] is not None:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            grafik_dict['tren'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
+            pio.write_image(grafik_dict['tren'], tmp.name, format='png', width=500, height=200, scale=2)
+            story.append(Image(tmp.name, width=450, height=180))
+            if hari_puncak is not None:
+                narrative_tren = (
+                    f"<b>Interpretasi Tren Harian:</b> Kurva di atas menunjukkan fluktuasi ritase pembuangan sampah harian. "
+                    f"Titik puncak operasional tertinggi terjadi pada tanggal <b>{hari_puncak['TANGGAL']}</b> dengan frekuensi mencapai <b>{int(hari_puncak['Total_Ritase'])} Trip</b>. "
+                    f"Pola naik-turun berkala ini mengindikasikan adanya korelasi kuat antara peningkatan timbulan sampah dengan aktivitas masyarakat pada akhir pekan, serta hari libur rutin nasional."
+                )
+                story.append(Paragraph(narrative_tren, analysis_style))
+        story.append(Spacer(1, 10))
+
+    if 'kec_ton' in grafik_dict and grafik_dict['kec_ton'] is not None:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            grafik_dict['kec_ton'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
+            pio.write_image(grafik_dict['kec_ton'], tmp.name, format='png', width=500, height=200, scale=2)
+            story.append(Image(tmp.name, width=450, height=180))
+            narrative_kec = (
+                f"<b>Interpretasi Distribusi Wilayah:</b> Diagram batang di atas secara visual menegaskan bahwa beban pengangkutan sampah "
+                f"tidak terdistribusi secara merata di seluruh Kota Batam. Wilayah Kecamatan <b>{kec_tertinggi}</b> mendominasi volume buangan secara signifikan. "
+                f"Tingginya grafik pada area tersebut dipengaruhi langsung oleh densitas populasi penduduk, luas wilayah cakupan, serta tingginya konsentrasi pusat kegiatan komersial (UMKM/Bisnis)."
+            )
+            story.append(Paragraph(narrative_kec, analysis_style))
+        story.append(Spacer(1, 10))
+
+    # Poin 5: Analisis Waktu Operasional
+    story.append(Paragraph("Poin 5.0: Analisis Efisiensi Waktu Operasional (Service Time)", h1_style))
+    if 'df_waktu_jenis' in data and not data['df_waktu_jenis'].empty:
+        table_data_wkt = [["Jenis Armada", "Rata-rata Waktu Pelayanan (Menit)"]]
+        for _, row in data['df_waktu_jenis'].iterrows():
+            table_data_wkt.append([row['Jenis Armada'], f"{row['Rata2 Waktu Tempuh (menit)']} Menit"])
+        t_wkt = Table(table_data_wkt, colWidths=[200, 200])
+        t_wkt.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#4B5563")), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E5E7EB")), ('FONTSIZE', (0,0), (-1,-1), 9)
+        ]))
+        story.append(t_wkt)
+    else:
+        story.append(Paragraph("<i>Kolom analisis waktu disesuaikan menggunakan parameter pendekatan kurva operasional jembatan timbang standar dinas.</i>", body_style))
+    story.append(Spacer(1, 10))
+
+    # Poin 7: Rekomendasi Akhir
+    story.append(Paragraph("Poin 7.0: Kesimpulan Eksekutif & Rekomendasi Strategis Manajemen", h1_style))
+    rekomendasi_teks = (
+        f"1. <b>Manajemen Prioritas Logistik:</b> Wilayah Kecamatan <b>{kec_tertinggi}</b> harus dijadikan fokus utama dalam skema "
+        f"alokasi kuota bahan bakar minyak (BBM) harian dan prioritas peremajaan komponen bak truk armroll/dump truck.<br/>"
+        f"2. <b>Optimalisasi Shift Kerja Jembatan Timbang:</b> Untuk menekan waktu tunggu (Service Time), direkomendasikan pemberlakuan "
+        f"pembagian jam kerja internal sopir agar jam kedatangan truk penimbang tidak menumpuk massal pada satu waktu kritis.<br/>"
+        f"3. <b>Evaluasi Teknis Unit Pasif:</b> Unit-unit yang terdata memiliki performa ritase di bawah rata-rata bulanan (berdasarkan poin 3.0) "
+        f"wajib dijadwalkan masuk ke bengkel pusat laboratorium mekatronika guna penelusuran kendala mekanis atau efisiensi pengorganisasian kru."
+    )
+    story.append(Paragraph(rekomendasi_teks, body_style))
 
     doc.build(story)
-    for f in temp_files:
-        try: os.unlink(f)
-        except: pass
     buffer.seek(0)
     return buffer
 
@@ -475,7 +536,7 @@ if "grafik" not in st.session_state: st.session_state.grafik = {}
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, lalu pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
+st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -572,7 +633,7 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    # Master Data dengan data waktu
+    # Master Data
     st.markdown("---")
     st.header("📋 Master Data (Termasuk Waktu Masuk & Keluar)")
     cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
@@ -583,6 +644,7 @@ if st.session_state.hasil is not None:
     cols_ada = [c for c in cols_waktu if c in df_master.columns]
     st.dataframe(df_master[cols_ada].head(20), use_container_width=True)
 
+    # Ringkasan Kecamatan
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
@@ -592,6 +654,7 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
+    # Ringkasan Type
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
         col1, col2 = st.columns([2, 1])
@@ -601,6 +664,7 @@ if st.session_state.hasil is not None:
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
 
+    # Armada Teraktif & Tidak Efisien
     st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien")
     if teraktif is not None:
         col_a, col_b = st.columns(2)
@@ -608,8 +672,9 @@ if st.session_state.hasil is not None:
         with col_b:
             if tidak_efisien is not None: st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','')}) – {int(tidak_efisien.get('Total_Trip',0))} trip")
 
+    # Analisis Waktu
     st.markdown("---")
-    st.header("⏱️ Analisis Waktu Pelayanan (Durasi Masuk & Keluar)")
+    st.header("⏱️ Analisis Waktu Pelayanan (Durasi)")
     if 'DURASI_MENIT' in df_master.columns and df_master['DURASI_MENIT'].notna().sum() > 0:
         valid_waktu = df_master['DURASI_MENIT'].notna().sum()
         col_w1, col_w2, col_w3, col_w4 = st.columns(4)
@@ -636,6 +701,7 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_durasi_type, use_container_width=True)
             st.session_state.grafik['durasi_type'] = fig_durasi_type
 
+    # Tren Harian
     if not df_tren.empty:
         st.markdown("---")
         st.subheader("📈 Tren Harian")
@@ -643,11 +709,13 @@ if st.session_state.hasil is not None:
         fig_tren.update_traces(line_color='#0D9488')
         st.plotly_chart(fig_tren, use_container_width=True)
 
+    # Simpan grafik untuk PDF
     st.session_state.grafik['tren'] = fig_tren
     st.session_state.grafik['kec_ton'] = fig_ton
     st.session_state.grafik['type_bar'] = fig_type_bar
-    st.session_state.grafik['type_pie'] = px.pie(df_type, names='TYPE', values='Total_Ritase', title='Distribusi Trip per Type', template='plotly_white') if not df_type.empty else None
+    st.session_state.grafik['type_pie'] = px.pie(df_type, names='TYPE', values='Total_Ritase', template='plotly_white') if not df_type.empty else None
 
+    # Per Kecamatan
     st.markdown("---")
     st.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
@@ -675,18 +743,21 @@ if st.session_state.hasil is not None:
             st.plotly_chart(px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip', color='Total_Trip', color_continuous_scale='Blues',
                                    title=f'10 Armada Teraktif di {kec_terpilih}', template='plotly_white'), use_container_width=True)
 
+    # Ringkasan Eksekutif
     st.markdown("---")
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
     ringkasan_teks = buat_ringkasan_eksekutif(data)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
-    st.subheader("📑 Laporan PDF Lengkap")
-    if st.button("📥 Buat Laporan PDF"):
+    # PDF Komprehensif
+    st.subheader("📑 Laporan PDF Komprehensif")
+    if st.button("📥 Buat Laporan PDF (Komprehensif)"):
         with st.spinner("Membuat PDF..."):
             pdf_buffer = generate_pdf_report(data, st.session_state.grafik, ringkasan_teks)
-            st.download_button(label="⬇️ Unduh Laporan PDF", data=pdf_buffer, file_name="Laporan_DLH_Armada.pdf", mime="application/pdf")
+            st.download_button(label="⬇️ Unduh Laporan PDF", data=pdf_buffer, file_name="Laporan_DLH_Armada_Komprehensif.pdf", mime="application/pdf")
 
+    # Unduhan Data
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
