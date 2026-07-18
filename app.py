@@ -424,11 +424,10 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     kec_tertinggi = df_kec.iloc[0]['Kecamatan'] if not df_kec.empty else "N/A"
     hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()] if not df_tren.empty else None
 
-    # Judul
     story.append(Paragraph("LAPORAN AKHIR KOMPREHENSIF HASIL EVALUASI DATA", title_style))
     story.append(Paragraph("Konsolidasi Log Jembatan Timbang Dinas Lingkungan Hidup Kota Batam • Periode Juni 2026", subtitle_style))
 
-    # Poin 1.0: Penggabungan Data
+    # Poin 1.0
     story.append(Paragraph("Poin 1.0: Penggabungan Data Harian (Konsolidasi Juni 2026)", h1_style))
     story.append(Paragraph(f"✔ Status Penggabungan  : SUKSES GABUNG ({data['cleaned_count']} Sheet Harian)", body_style))
     story.append(Paragraph(f"✔ Periode Data         : Juni 2026", body_style))
@@ -436,7 +435,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     story.append(Paragraph(f"✔ Total Kolom Terdata  : {df_master.shape[1]} kolom", body_style))
     story.append(Spacer(1, 10))
 
-    # Poin 2.0: Sebaran Wilayah
+    # Poin 2.0
     story.append(Paragraph("Poin 2.0: Kategorisasi Data Berdasarkan Wilayah Kecamatan", h1_style))
     if not df_kec.empty:
         table_data_kec = [["Kecamatan", "Armada Aktif", "Total Ritase (Trip)", "Total Tonase (Kg)"]]
@@ -452,7 +451,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t_kec)
         story.append(Spacer(1, 10))
 
-    # Poin 3: Analisis Performa Armada (Top 5)
+    # Poin 3.0
     story.append(Paragraph("Poin 3.0: Analisis Kuantitatif Trip & Akumulasi Muatan per Armada (Top 5 Unit)", h1_style))
     if not df_armada.empty:
         table_data_arm = [["No. Pintu", "No. Plat", "Wilayah Kecamatan", "Tipe", "Total Trip", "Total Netto (Ton)"]]
@@ -469,7 +468,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t_arm)
         story.append(Spacer(1, 10))
 
-    # Poin 4 & 6: Tren Harian, Visualisasi
+    # Poin 4 & 6
     story.append(Paragraph("Poin 4.0 & 6.0: Tren Produktivitas Harian & Dashboard Laporan Visual", h1_style))
     if 'tren' in grafik_dict and grafik_dict['tren'] is not None:
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
@@ -498,7 +497,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
             story.append(Paragraph(narrative_kec, analysis_style))
         story.append(Spacer(1, 10))
 
-    # Poin 5: Analisis Waktu Operasional
+    # Poin 5
     story.append(Paragraph("Poin 5.0: Analisis Efisiensi Waktu Operasional (Service Time)", h1_style))
     if 'df_waktu_jenis' in data and not data['df_waktu_jenis'].empty:
         table_data_wkt = [["Jenis Armada", "Rata-rata Waktu Pelayanan (Menit)"]]
@@ -514,7 +513,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(Paragraph("<i>Kolom analisis waktu disesuaikan menggunakan parameter pendekatan kurva operasional jembatan timbang standar dinas.</i>", body_style))
     story.append(Spacer(1, 10))
 
-    # Poin 7: Rekomendasi Akhir
+    # Poin 7
     story.append(Paragraph("Poin 7.0: Kesimpulan Eksekutif & Rekomendasi Strategis Manajemen", h1_style))
     rekomendasi_teks = (
         f"1. <b>Manajemen Prioritas Logistik:</b> Wilayah Kecamatan <b>{kec_tertinggi}</b> harus dijadikan fokus utama dalam skema "
@@ -614,17 +613,39 @@ with st.sidebar:
 # Tampilkan hasil
 if st.session_state.hasil is not None:
     data = st.session_state.hasil
-    df_master = data['df_master']
+    df_master_original = data['df_master']
     col_netto = data['col_netto']
-    df_kec = data['df_kec']
-    df_type = data['df_type']
-    df_armada = data['df_armada']
-    teraktif = data['teraktif']
-    tidak_efisien = data['tidak_efisien']
-    df_waktu_jenis = data['df_waktu_jenis']
-    df_tren = data['df_tren']
 
-    # ========== POIN 1.0: PENGGABUNGAN DATA ==========
+    # ---------- FITUR PENCARIAN (SEARCH) ----------
+    st.sidebar.markdown("---")
+    st.sidebar.header("🔍 Pencarian Global")
+    search_query = st.sidebar.text_input("Cari NOPIN / Plat / Kecamatan / Tanggal", "")
+    if search_query:
+        mask = (
+            df_master_original['NOPIN'].str.contains(search_query, case=False, na=False) |
+            df_master_original['NO_PLAT'].str.contains(search_query, case=False, na=False) |
+            df_master_original['Kecamatan'].str.contains(search_query, case=False, na=False) |
+            df_master_original['TANGGAL'].astype(str).str.contains(search_query, case=False, na=False)
+        )
+        df_master = df_master_original[mask].copy()
+        # Hitung ulang agregasi berdasarkan data terfilter
+        df_armada, teraktif, tidak_efisien = hitung_agregasi_armada(df_master, col_netto)
+        df_waktu_jenis = hitung_waktu_per_jenis(df_master)
+        df_kec = hitung_per_kecamatan(df_master, col_netto)
+        df_type = hitung_per_type(df_master, col_netto)
+        df_tren = hitung_tren_harian(df_master, col_netto)
+        st.sidebar.info(f"Menampilkan hasil untuk pencarian: '{search_query}' ({len(df_master)} baris)")
+    else:
+        df_master = df_master_original
+        df_armada = data['df_armada']
+        teraktif = data['teraktif']
+        tidak_efisien = data['tidak_efisien']
+        df_waktu_jenis = data['df_waktu_jenis']
+        df_kec = data['df_kec']
+        df_type = data['df_type']
+        df_tren = data['df_tren']
+
+    # ========== POIN 1.0 ==========
     st.header("📋 Poin 1.0: Penggabungan Data Harian (Konsolidasi)")
     col_prioritas = ['TANGGAL', 'NOPIN', 'NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']
     kolom_sisa = [col for col in df_master.columns if col not in col_prioritas]
@@ -764,7 +785,18 @@ if st.session_state.hasil is not None:
     # Ringkasan Eksekutif
     st.markdown("---")
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
-    ringkasan_teks = buat_ringkasan_eksekutif(data)
+    # Gunakan data yang sudah difilter untuk ringkasan
+    data_filtered = {
+        'df_master': df_master,
+        'col_netto': col_netto,
+        'df_kec': df_kec,
+        'df_armada': df_armada,
+        'teraktif': teraktif,
+        'tidak_efisien': tidak_efisien,
+        'df_tren': df_tren,
+        'cleaned_count': data['cleaned_count']
+    }
+    ringkasan_teks = buat_ringkasan_eksekutif(data_filtered)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
@@ -772,7 +804,7 @@ if st.session_state.hasil is not None:
     st.subheader("📑 Laporan PDF Komprehensif")
     if st.button("📥 Buat Laporan PDF (Komprehensif)"):
         with st.spinner("Membuat PDF..."):
-            pdf_buffer = generate_pdf_report(data, st.session_state.grafik, ringkasan_teks)
+            pdf_buffer = generate_pdf_report(data_filtered, st.session_state.grafik, ringkasan_teks)
             st.download_button(label="⬇️ Unduh Laporan PDF", data=pdf_buffer, file_name="Laporan_DLH_Armada_Komprehensif.pdf", mime="application/pdf")
 
     # Unduhan Data
