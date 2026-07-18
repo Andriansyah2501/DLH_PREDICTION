@@ -336,7 +336,7 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         'col_netto': col_netto, 'skipped': skipped, 'cleaned_count': len(cleaned)
     }
 
-# -------------------------- Ringkasan Eksekutif & PDF --------------------------
+# -------------------------- Ringkasan Eksekutif (perbaikan TypeError) --------------------------
 def buat_ringkasan_eksekutif(data):
     df = data['df_master']
     col_netto = data['col_netto']
@@ -344,6 +344,7 @@ def buat_ringkasan_eksekutif(data):
     df_armada = data['df_armada']
     teraktif = data['teraktif']
     tidak_efisien = data['tidak_efisien']
+    df_tren = data.get('df_tren', pd.DataFrame())
 
     if 'TANGGAL' in df.columns:
         df['TANGGAL_DT'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
@@ -362,7 +363,14 @@ def buat_ringkasan_eksekutif(data):
     list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()]) if not terbawah.empty else "tidak tersedia"
 
     durasi_rata = df['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df.columns else 0
-    hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()] if not df_tren.empty else None
+
+    # Perbaikan: hindari penggabungan langsung dengan Timestamp
+    hari_puncak_str = ""
+    if not df_tren.empty:
+        hari_puncak = df_tren.loc[df_tren['Total_Ritase'].idxmax()]
+        tgl_puncak = pd.Timestamp(hari_puncak['TANGGAL']).strftime('%d %B %Y') if pd.notna(hari_puncak.get('TANGGAL')) else "-"
+        ritase_puncak = int(hari_puncak.get('Total_Ritase', 0))
+        hari_puncak_str = f"- Hari dengan ritase tertinggi: {tgl_puncak} ({ritase_puncak} trip)"
 
     teks = f"""
 LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
@@ -378,7 +386,7 @@ LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
      dengan kontribusi muatan sebesar {tonase_tertinggi:,.0f} Ton.
    - Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','-')}) dengan {int(teraktif.get('Total_Trip',0))} trip.
    - Armada paling tidak efisien: {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','-')}) dengan {int(tidak_efisien.get('Total_Trip',0))} trip.
-   {"- Hari dengan ritase tertinggi: " + hari_puncak['TANGGAL'] + " (" + str(int(hari_puncak['Total_Ritase'])) + " trip)" if hari_puncak is not None else ""}
+   {hari_puncak_str}
 
 2. REKOMENDASI STRATEGIS MANAJEMEN:
    - [Optimasi Rute & Armada] Melakukan redistribusi atau penambahan unit armada
@@ -393,6 +401,7 @@ LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
     """
     return teks
 
+# -------------------------- Generate PDF Report --------------------------
 def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -473,9 +482,10 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
             pio.write_image(grafik_dict['tren'], tmp.name, format='png', width=500, height=200, scale=2)
             story.append(Image(tmp.name, width=450, height=180))
             if hari_puncak is not None:
+                tgl_puncak_pdf = pd.Timestamp(hari_puncak['TANGGAL']).strftime('%d %B %Y') if pd.notna(hari_puncak.get('TANGGAL')) else "-"
                 narrative_tren = (
                     f"<b>Interpretasi Tren Harian:</b> Kurva di atas menunjukkan fluktuasi ritase pembuangan sampah harian. "
-                    f"Titik puncak operasional tertinggi terjadi pada tanggal <b>{hari_puncak['TANGGAL']}</b> dengan frekuensi mencapai <b>{int(hari_puncak['Total_Ritase'])} Trip</b>. "
+                    f"Titik puncak operasional tertinggi terjadi pada tanggal <b>{tgl_puncak_pdf}</b> dengan frekuensi mencapai <b>{int(hari_puncak['Total_Ritase'])} Trip</b>. "
                     f"Pola naik-turun berkala ini mengindikasikan adanya korelasi kuat antara peningkatan timbulan sampah dengan aktivitas masyarakat pada akhir pekan, serta hari libur rutin nasional."
                 )
                 story.append(Paragraph(narrative_tren, analysis_style))
@@ -602,7 +612,7 @@ with st.sidebar:
                 if hasil is None: st.error("Gagal memproses data.")
                 else:
                     st.session_state.hasil = hasil
-                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Data siap ditampilkan.")
+                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah.")
                     st.balloons()
 
 # Tampilkan hasil
