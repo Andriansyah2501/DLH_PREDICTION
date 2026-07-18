@@ -914,6 +914,9 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
+    # Penjelasan metrik global untuk orang awam
+    st.caption("Total trip adalah jumlah seluruh perjalanan armada dalam sebulan. Armada aktif adalah jumlah unit yang beroperasi.")
+
     # ---------- MASTER DATA (1000 BARIS PERTAMA) ----------
     st.subheader("📋 Master Data (1000 Baris Pertama, dengan No Urut)")
     cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
@@ -1043,6 +1046,12 @@ if st.session_state.hasil is not None:
             if df_elbow.empty:
                 st.warning("Data setelah pembersihan outlier kosong.")
             else:
+                # Penjelasan Elbow dan Silhouette untuk orang awam
+                st.markdown("""
+                **Elbow Method** membantu memilih jumlah cluster yang optimal.  
+                Titik di mana kurva mulai melandai (seperti siku) menunjukkan jumlah cluster yang pas.  
+                **Silhouette Score** mengukur seberapa baik setiap data masuk ke clusternya. Nilai mendekati 1 berarti cluster terbentuk dengan baik.
+                """)
                 X_elbow = df_elbow[fitur_cols_elbow].values
                 scaler_elbow = StandardScaler()
                 X_elbow_scaled = scaler_elbow.fit_transform(X_elbow)
@@ -1076,6 +1085,19 @@ if st.session_state.hasil is not None:
                     )
                     st.plotly_chart(fig_cluster_dur, use_container_width=True)
                 st.plotly_chart(fig_cluster, use_container_width=True)
+
+                # --- Interpretasi clustering untuk orang awam ---
+                st.markdown("---")
+                st.subheader("🧠 Apa arti cluster ini?")
+                st.markdown("""
+                Setiap armada dikelompokkan ke dalam cluster berdasarkan kemiripan jumlah **trip**, **tonase**, dan (jika tersedia) **durasi**.
+                - **Cluster dengan trip & tonase tinggi** ➔ armada andalan, perlu perawatan prima.
+                - **Cluster dengan trip & tonase rendah** ➔ armada yang mungkin kurang optimal, perlu pengecekan.
+                - **Cluster menengah** ➔ armada yang beroperasi normal.
+
+                Gunakan informasi ini untuk memprioritaskan pemeliharaan, penjadwalan, atau evaluasi rute.
+                """)
+                st.markdown("---")
 
                 st.subheader("📋 Ringkasan per Cluster")
                 ringkasan_disp = ringkasan_cluster.copy()
@@ -1116,6 +1138,13 @@ if st.session_state.hasil is not None:
 
             model_option = st.selectbox("Pilih Model", ["Random Forest", "KNN", "Decision Tree", "SVM", "Naive Bayes"])
 
+            # Penjelasan sebelum tombol Latih
+            st.markdown("""
+            Model yang akan dilatih akan **mempelajari pola** dari data clustering yang sudah dibuat.  
+            Setelah dilatih, model dapat digunakan untuk **memprediksi cluster** armada baru hanya dengan melihat trip dan tonase-nya.  
+            Ini berguna untuk mengklasifikasikan armada tanpa perlu menjalankan ulang clustering.
+            """)
+
             if st.button("Latih Model"):
                 with st.spinner("Melatih model..."):
                     model, scaler, acc, cm, cr = latih_model_klasifikasi(df_cluster, fitur_cols, model_option)
@@ -1134,6 +1163,29 @@ if st.session_state.hasil is not None:
                     st.subheader("Classification Report")
                     cr_df = pd.DataFrame(cr).transpose()
                     st.dataframe(cr_df.style.format("{:.2f}"))
+
+                    # --- Penjelasan untuk orang awam ---
+                    with st.expander("📖 Bagaimana membaca hasil ini? (Klik untuk penjelasan)"):
+                        st.markdown("""
+                        **Akurasi** menunjukkan seberapa sering model benar dalam menebak cluster sebuah armada.  
+                        Contoh: akurasi 85% berarti dari 100 armada, model benar menebak 85 kali.
+
+                        **Confusion Matrix** adalah tabel yang membandingkan tebakan model dengan kenyataan.  
+                        Angka diagonal (kiri atas ke kanan bawah) yang tinggi menandakan model bekerja baik.
+
+                        **Classification Report** menampilkan *precision*, *recall*, dan *f1-score* untuk tiap cluster.  
+                        - *Precision*: berapa persen tebakan model untuk suatu cluster yang benar.  
+                        - *Recall*: berapa persen data asli suatu cluster yang berhasil dikenali.  
+                        - *F1-score*: keseimbangan antara precision dan recall.
+
+                        Model yang baik memiliki nilai mendekati 1.00.
+                        """)
+
+                    # Interpretasi khusus hasil model
+                    if acc is not None:
+                        cluster_names = [f'Cluster {i}' for i in range(len(cm))]
+                        terbaik = cluster_names[np.argmax(np.diag(cm))]
+                        st.info(f"🔍 Model paling akurat dalam mengenali **{terbaik}**. Gunakan model ini untuk memprediksi cluster armada baru berdasarkan trip dan tonase.")
 
                     with open('model_cluster.pkl', 'rb') as f:
                         st.download_button("📥 Unduh Model (PKL)", f, file_name='model_cluster.pkl')
