@@ -101,11 +101,10 @@ def hitung_durasi(df_master):
         st.warning("⚠️ Gagal mengonversi waktu. Periksa format di Excel (contoh: 08:30:00 atau 08.30).")
     return df_master
 
-# -------------------------- Proses Data Utama (dari kode Anda) --------------------------
+# -------------------------- Proses Data Utama --------------------------
 def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
-    """Menggabungkan logika dari kode Anda dan dashboard."""
+    """Menggabungkan logika dari kode asli dan dashboard."""
     if use_master and master_sheet:
-        # Mode Master Sheet
         if master_sheet not in sheets_dict: return None
         df_master = sheets_dict[master_sheet].copy()
         first_row = df_master.iloc[0].astype(str).str.upper().values
@@ -118,14 +117,21 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         df_master = df_master.rename(columns={col_nopin: 'NOPIN'})
         if col_plat: df_master = df_master.rename(columns={col_plat: 'NO_PLAT'})
         else: df_master['NO_PLAT'] = ''
-        # ... (pembersihan dan sinkronisasi tidak diperlukan karena sudah master)
-        # Kita anggap master sudah bersih, langsung hitung durasi dan agregasi
         df_master = df_master.dropna(subset=['NOPIN'])
         df_master['NOPIN'] = df_master['NOPIN'].astype(str).str.strip().str.upper()
-        # ... (skip detail, lanjut ke durasi)
+        df_master = df_master[~df_master['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
+        df_master = df_master[df_master['NOPIN'] != '']
+        df_master['NOPIN'] = df_master['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+        if 'Kecamatan' in df_master.columns: df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
+        else: df_master['Kecamatan'] = 'Tidak Diketahui'
+        key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
+        ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
+        if ton_col: key_cols.append(ton_col)
+        df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
+        if ton_col: df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
+        col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
         df_master = hitung_durasi(df_master)
-        # Agregasi
-        return hitung_agregasi(df_master)
+        return hitung_agregasi(df_master, col_netto)
 
     # Mode Otomatis / Manual
     armada_sheet = config.get('armada_sheet')
@@ -135,12 +141,15 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
     ref_dict = {}
     if armada_sheet and armada_sheet in sheets_dict:
         df_arm = sheets_dict[armada_sheet].copy()
-        # Cari header (asumsi header di baris 1 seperti kode Anda)
-        header_arm = 1  # sesuai kode: header=1
-        xls = pd.ExcelFile(uploaded_file)
-        df_ref = pd.read_excel(xls, sheet_name=armada_sheet, header=header_arm)
+        header_arm = 1
+        try:
+            xls = pd.ExcelFile(uploaded_file)
+            df_ref = pd.read_excel(xls, sheet_name=armada_sheet, header=header_arm)
+        except:
+            # fallback jika tidak bisa baca ulang
+            df_ref = df_arm.iloc[header_arm:].reset_index(drop=True)
+            df_ref.columns = df_arm.iloc[header_arm-1].astype(str).str.strip().str.upper() if header_arm > 0 else [str(c).strip().upper() for c in df_arm.iloc[0]]
         df_ref.columns = [str(c).strip().upper() for c in df_ref.columns]
-        # Cari kolom NOPIN dan NO.PLAT
         col_nopin = cari_kolom(df_ref.columns, ['NOPIN', 'PINTU'])
         col_plat = cari_kolom(df_ref.columns, ['PLAT', 'NOPOL'])
         col_kec = cari_kolom(df_ref.columns, ['LOKASI KECAMATAN', 'KECAMATAN', 'LOKASI', 'KEC'])
@@ -158,33 +167,23 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
 
     # 2. Proses sheet harian
     cleaned_sheets = {}
-    total_baris = 0
     skipped = []
     for sheet in daily_sheets:
-        if sheet not in sheets_dict:
-            skipped.append(sheet)
-            continue
+        if sheet not in sheets_dict: skipped.append(sheet); continue
         df_raw = sheets_dict[sheet].copy()
-        # Cari header seperti kode Anda
         header_idx = None
         for idx, row in df_raw.iterrows():
             row_str = " ".join(row.astype(str).dropna().str.upper().values)
             if 'PINTU' in row_str or 'PLAT MOBIL' in row_str:
-                header_idx = idx
-                break
-        if header_idx is None:
-            skipped.append(sheet)
-            continue
-        # Baca ulang dengan header
+                header_idx = idx; break
+        if header_idx is None: skipped.append(sheet); continue
         df_hari = df_raw.iloc[header_idx+1:].reset_index(drop=True)
         header_row = df_raw.iloc[header_idx].astype(str).str.strip().str.upper()
         df_hari.columns = [str(c).strip().upper() for c in header_row]
 
         col_nopin_h = cari_kolom(df_hari.columns, ['PINTU', 'NOPIN'])
         col_plat_h = cari_kolom(df_hari.columns, ['PLAT'])
-        if not col_nopin_h or not col_plat_h:
-            skipped.append(sheet)
-            continue
+        if not col_nopin_h or not col_plat_h: skipped.append(sheet); continue
         df_hari.rename(columns={col_nopin_h: 'NOPIN', col_plat_h: 'NO_PLAT'}, inplace=True)
 
         # Pembersihan
@@ -193,20 +192,19 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
         df_hari = df_hari[df_hari['NOPIN'] != '']
         df_hari['NOPIN'] = df_hari['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+        df_hari = df_hari.reset_index(drop=True)
 
-        # Sinkronisasi dengan master
+        # Sinkronisasi dengan master (ganti apply dengan merge)
         if ref_dict:
-            def sinkron(row):
-                nopin = row['NOPIN']
-                if nopin in ref_dict:
-                    row['NO_PLAT'] = ref_dict[nopin]['NO.PLAT']
-                    if 'Kecamatan' in ref_dict[nopin]: row['Kecamatan'] = ref_dict[nopin]['Kecamatan']
-                    if 'MERK' in ref_dict[nopin]: row['MERK'] = ref_dict[nopin]['MERK']
-                    if 'TYPE' in ref_dict[nopin]: row['TYPE'] = ref_dict[nopin]['TYPE']
-                return row
-            df_hari = df_hari.apply(sinkron, axis=1)
+            ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN'})
+            cols_ref = ['NOPIN', 'NO.PLAT']
+            for c in ['Kecamatan', 'MERK', 'TYPE']:
+                if c in ref_df.columns: cols_ref.append(c)
+            for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
+                if col in df_hari.columns: df_hari.drop(columns=[col], inplace=True)
+            df_hari = df_hari.merge(ref_df[cols_ref], on='NOPIN', how='left')
         else:
-            for col in ['Kecamatan', 'MERK', 'TYPE']:
+            for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
                 if col not in df_hari.columns: df_hari[col] = ''
 
         # Normalisasi kecamatan
@@ -217,28 +215,20 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         try: tgl = f"2026-06-{int(sheet):02d}"
         except: tgl = sheet
         df_hari['TANGGAL'] = tgl
-
         df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
         cleaned_sheets[sheet] = df_hari
-        total_baris += len(df_hari)
 
     if not cleaned_sheets: return None
 
     df_master = pd.concat(cleaned_sheets.values(), ignore_index=True, sort=False)
-
-    # Pembersihan duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col: key_cols.append(ton_col)
     df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
-
     if ton_col: df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
     col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
 
-    # Hitung durasi
     df_master = hitung_durasi(df_master)
-
-    # Agregasi
     return hitung_agregasi(df_master, col_netto, cleaned_sheets, skipped)
 
 def hitung_agregasi(df_master, col_netto, cleaned_sheets=None, skipped=None):
@@ -301,7 +291,7 @@ def hitung_agregasi(df_master, col_netto, cleaned_sheets=None, skipped=None):
         'cleaned_count': len(cleaned_sheets) if cleaned_sheets else 1
     }
 
-# -------------------------- Ringkasan Eksekutif & PDF (sama seperti sebelumnya) --------------------------
+# -------------------------- Ringkasan Eksekutif & PDF --------------------------
 def buat_ringkasan_eksekutif(data):
     df = data['df_master']
     col_netto = data['col_netto']
@@ -372,7 +362,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         if baris.strip(): story.append(Paragraph(baris, normal_style))
     story.append(Spacer(1, 12))
 
-    # Tabel kecamatan
     df_kec = data['df_kec']
     if not df_kec.empty:
         story.append(Paragraph("5 Kecamatan dengan Aktivitas Tertinggi", heading_style))
@@ -387,7 +376,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
                                ('FONTSIZE', (0,0), (-1,-1), 8)]))
         story.append(t); story.append(Spacer(1, 12))
 
-    # Tabel type
     df_type = data['df_type']
     if not df_type.empty:
         story.append(Paragraph("Ringkasan per Jenis Armada", heading_style))
@@ -402,7 +390,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
                                 ('FONTSIZE', (0,0), (-1,-1), 8)]))
         story.append(t2); story.append(Spacer(1, 12))
 
-    # Grafik
     temp_files = []
     story.append(Paragraph("Visualisasi Data", heading_style))
     for key, fig in grafik_dict.items():
@@ -437,7 +424,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
     if uploaded_file:
         st.session_state.sheets = baca_semua_sheet(uploaded_file)
-        st.session_state.uploaded_file = uploaded_file  # simpan untuk digunakan di proses_data
+        st.session_state.uploaded_file = uploaded_file
         if not st.session_state.sheets: st.error("File tidak memiliki sheet yang valid.")
         else: st.success(f"Terbaca {len(st.session_state.sheets)} sheet.")
 
@@ -465,7 +452,6 @@ with st.sidebar:
                 if mode == "Gunakan Sheet Master Data":
                     hasil = proses_data(st.session_state.sheets, {}, use_master=True, master_sheet=master_sheet)
                 elif mode == "Otomatis":
-                    # Tentukan otomatis
                     armada = next((s for s in st.session_state.sheets if 'list armada' in s.lower()), None)
                     if armada is None: armada = next((s for s in st.session_state.sheets if 'armada' in s.lower()), None)
                     daily = [s for s in st.session_state.sheets if s.isdigit()]
@@ -481,7 +467,7 @@ with st.sidebar:
                     st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Data waktu + tanggal siap.")
                     st.balloons()
 
-# Tampilkan hasil (sama seperti sebelumnya, tidak diubah)
+# Tampilkan hasil (sama seperti sebelumnya, tanpa perubahan)
 if st.session_state.hasil is not None:
     data = st.session_state.hasil
     df_master = data['df_master']
@@ -494,7 +480,6 @@ if st.session_state.hasil is not None:
     df_waktu_jenis = data['df_waktu_jenis']
     df_tren = data['df_tren']
 
-    # --- GLOBAL ---
     st.header("📊 Analisis Keseluruhan (Global)")
     total_trip_global = len(df_master)
     total_armada_global = df_master['NOPIN'].nunique()
@@ -507,10 +492,8 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    # --- MASTER DATA DENGAN TANGGAL & WAKTU ---
     st.markdown("---")
     st.header("📋 Master Data (Tanggal, Masuk, Keluar, Durasi)")
-    st.markdown("Menampilkan: **NOPIN, Plat, Kecamatan, Tanggal, Masuk, Keluar, Durasi**.")
     cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
     if col_netto: cols_waktu.append(col_netto)
     if 'MASUK_ORI' in df_master.columns: cols_waktu.append('MASUK_ORI')
@@ -518,9 +501,7 @@ if st.session_state.hasil is not None:
     if 'DURASI_MENIT' in df_master.columns: cols_waktu.append('DURASI_MENIT')
     cols_ada = [c for c in cols_waktu if c in df_master.columns]
     st.dataframe(df_master[cols_ada].sort_values(['TANGGAL', 'MASUK_ORI']).head(20), use_container_width=True)
-    st.caption("`MASUK_ORI` & `KELUAR_ORI` = data asli dari Excel. `DURASI_MENIT` = selisih yang sudah dibersihkan. Data diurutkan berdasarkan Tanggal dan Waktu Masuk.")
 
-    # Ringkasan Kecamatan
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
@@ -530,7 +511,6 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
-    # Ringkasan Type
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
         col1, col2 = st.columns([2, 1])
@@ -540,7 +520,6 @@ if st.session_state.hasil is not None:
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
 
-    # Armada Ekstrem
     st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien")
     if teraktif is not None:
         col_a, col_b = st.columns(2)
@@ -548,7 +527,6 @@ if st.session_state.hasil is not None:
         with col_b:
             if tidak_efisien is not None: st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','')}) – {int(tidak_efisien.get('Total_Trip',0))} trip")
 
-    # --- ANALISIS WAKTU (DURASI) ---
     st.markdown("---")
     st.header("⏱️ Analisis Waktu Pelayanan (Durasi Masuk & Keluar)")
     if 'DURASI_MENIT' in df_master.columns and df_master['DURASI_MENIT'].notna().sum() > 0:
@@ -576,10 +554,7 @@ if st.session_state.hasil is not None:
                                      title='Rata‑rata Waktu Tempuh per Jenis Armada', template='plotly_white')
             st.plotly_chart(fig_durasi_type, use_container_width=True)
             st.session_state.grafik['durasi_type'] = fig_durasi_type
-    else:
-        st.info("Data durasi tidak tersedia atau tidak valid.")
 
-    # --- TREN HARIAN ---
     if not df_tren.empty:
         st.markdown("---")
         st.subheader("📈 Tren Harian")
@@ -587,13 +562,11 @@ if st.session_state.hasil is not None:
         fig_tren.update_traces(line_color='#0D9488')
         st.plotly_chart(fig_tren, use_container_width=True)
 
-    # Simpan grafik untuk PDF
     st.session_state.grafik['tren'] = fig_tren
     st.session_state.grafik['kec_ton'] = fig_ton
     st.session_state.grafik['type_bar'] = fig_type_bar
     st.session_state.grafik['type_pie'] = px.pie(df_type, names='TYPE', values='Total_Ritase', title='Distribusi Trip per Type', template='plotly_white') if not df_type.empty else None
 
-    # --- PER KECAMATAN ---
     st.markdown("---")
     st.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
@@ -621,21 +594,18 @@ if st.session_state.hasil is not None:
             st.plotly_chart(px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip', color='Total_Trip', color_continuous_scale='Blues',
                                    title=f'10 Armada Teraktif di {kec_terpilih}', template='plotly_white'), use_container_width=True)
 
-    # --- RINGKASAN EKSEKUTIF ---
     st.markdown("---")
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
     ringkasan_teks = buat_ringkasan_eksekutif(data)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
-    # --- PDF ---
     st.subheader("📑 Laporan PDF Lengkap (Warna Sesuai Dashboard)")
     if st.button("📥 Buat Laporan PDF"):
         with st.spinner("Membuat PDF..."):
             pdf_buffer = generate_pdf_report(data, st.session_state.grafik, ringkasan_teks)
             st.download_button(label="⬇️ Unduh Laporan PDF", data=pdf_buffer, file_name="Laporan_DLH_Armada.pdf", mime="application/pdf")
 
-    # --- UNDUHAN DATA ---
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
@@ -661,7 +631,3 @@ if st.session_state.hasil is not None:
 
     with st.expander("🔎 Lihat Data Mentah Lengkap (200 baris pertama)"):
         st.dataframe(df_master.head(200))
-
-else:
-    st.info("👆 Unggah file Excel, pilih mode, lalu klik **Proses Data** untuk memulai.")
-    st.image("https://cdn-icons-png.flaticon.com/512/3081/3081559.png", width=150)
