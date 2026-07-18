@@ -163,12 +163,14 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
     return df_hari
 
 def hitung_durasi(df_master):
+    """Menghitung durasi dari kolom waktu (jika ada) dan membersihkan outlier."""
     col_masuk = cari_kolom(df_master.columns, ['MASUK', 'JAM_1', 'TIMBANG1'])
     col_keluar = cari_kolom(df_master.columns, ['KELUAR', 'JAM_2', 'TIMBANG2'])
     if col_masuk and col_keluar:
         df_master['MASUK_DT'] = pd.to_datetime(df_master[col_masuk], format='%H:%M:%S', errors='coerce')
         df_master['KELUAR_DT'] = pd.to_datetime(df_master[col_keluar], format='%H:%M:%S', errors='coerce')
         df_master['DURASI_MENIT'] = (df_master['KELUAR_DT'] - df_master['MASUK_DT']).dt.total_seconds() / 60
+        # Hanya durasi 0-300 menit yang dianggap valid
         df_master = df_master[(df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)]
         try:
             df_master['JAM_INPUT'] = pd.to_datetime(df_master[col_masuk], format='%H:%M:%S', errors='coerce').dt.hour
@@ -192,6 +194,7 @@ def hitung_agregasi_armada(df_master, col_netto):
     return df_armada, teraktif, tidak_efisien
 
 def hitung_waktu_per_jenis(df_master):
+    """Rata-rata durasi per jenis armada."""
     if 'DURASI_MENIT' in df_master.columns and 'TYPE' in df_master.columns:
         df_waktu = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
         df_waktu.columns = ['Jenis Armada', 'Rata2 Waktu Tempuh (menit)']
@@ -199,6 +202,7 @@ def hitung_waktu_per_jenis(df_master):
     return pd.DataFrame()
 
 def hitung_per_kecamatan(df_master, col_netto):
+    """Agregasi per kecamatan, termasuk rata-rata durasi."""
     if 'Kecamatan' in df_master.columns and col_netto:
         df_kec = df_master.groupby('Kecamatan', dropna=False).agg(
             Total_Ritase=('NOPIN', 'count'),
@@ -213,6 +217,7 @@ def hitung_per_kecamatan(df_master, col_netto):
     return pd.DataFrame()
 
 def hitung_per_type(df_master, col_netto):
+    """Agregasi per tipe armada, termasuk rata-rata durasi."""
     if 'TYPE' in df_master.columns and col_netto:
         df_type = df_master.groupby('TYPE', dropna=False).agg(
             Total_Ritase=('NOPIN', 'count'),
@@ -240,18 +245,12 @@ def proses_master_sheet(sheets_dict, master_sheet_name):
     if master_sheet_name not in sheets_dict:
         return None
     df_master = sheets_dict[master_sheet_name].copy()
-    # Deteksi header sederhana: asumsikan baris pertama adalah header
+    # Deteksi header sederhana
     if df_master.shape[0] > 0:
-        # Jika header ada di baris lain, bisa dicari, tapi untuk master biasanya rapi.
-        # Kita coba deteksi: jika baris pertama berisi string yang mengandung 'NOPIN' atau 'PINTU', jadikan header.
         first_row = df_master.iloc[0].astype(str).str.upper().values
         if any('NOPIN' in str(x) or 'PINTU' in str(x) for x in first_row):
             df_master.columns = [str(c).strip().upper() for c in first_row]
             df_master = df_master.iloc[1:].reset_index(drop=True)
-        else:
-            # Jika tidak, biarkan saja, nanti cari kolom NOPIN/PLAT
-            pass
-    # Cari kolom penting
     col_nopin = cari_kolom(df_master.columns, ['NOPIN', 'PINTU'])
     col_plat = cari_kolom(df_master.columns, ['PLAT', 'NOPOL'])
     if not col_nopin:
@@ -267,25 +266,21 @@ def proses_master_sheet(sheets_dict, master_sheet_name):
     else:
         df_master['NO_PLAT'] = ''
 
-    # Pembersihan
     df_master = df_master.dropna(subset=['NOPIN'])
     df_master['NOPIN'] = df_master['NOPIN'].astype(str).str.strip().str.upper()
     df_master = df_master[~df_master['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
     df_master = df_master[df_master['NOPIN'] != '']
     df_master['NOPIN'] = df_master['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
 
-    # Normalisasi kecamatan jika ada
     if 'Kecamatan' in df_master.columns:
         df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
     else:
-        # Coba cari kolom kecamatan lain
         col_kec = cari_kolom(df_master.columns, ['KECAMATAN', 'LOKASI'])
         if col_kec:
             df_master['Kecamatan'] = df_master[col_kec].apply(normalisasi_kecamatan)
         else:
             df_master['Kecamatan'] = 'Tidak Diketahui'
 
-    # Hapus duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
@@ -398,6 +393,11 @@ def buat_ringkasan_eksekutif(data):
     total_ritase = len(df)
     total_armada = df['NOPIN'].nunique()
     total_tonase_ton = round(df[col_netto].sum() / 1000, 2) if col_netto else 0
+    # Rata-rata durasi global
+    if 'DURASI_MENIT' in df.columns:
+        durasi_global = df['DURASI_MENIT'].dropna().mean()
+    else:
+        durasi_global = 0
 
     if not df_kec.empty:
         kec_tertinggi = df_kec.iloc[0]['Kecamatan']
@@ -421,6 +421,7 @@ LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
    - Total frekuensi perjalanan (ritase) pengangkutan menuju TPA adalah {total_ritase} trip.
    - Total volume sampah yang berhasil dipindahkan dan ditimbang
      mencapai {total_tonase_ton:,.0f} Ton.
+   - Rata-rata durasi pelayanan di jembatan timbang: {durasi_global:.1f} menit.
    - Wilayah dengan beban pengangkutan tertinggi berada di Kecamatan {kec_tertinggi}
      dengan kontribusi muatan sebesar {tonase_tertinggi:,.0f} Ton.
    - Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','-')}) dengan {int(teraktif.get('Total_Trip',0))} trip.
@@ -462,10 +463,10 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     df_kec = data['df_kec']
     if not df_kec.empty:
         story.append(Paragraph("5 Kecamatan dengan Aktivitas Tertinggi", heading_style))
-        table_data = [['Kecamatan', 'Ritase', 'Tonase (Kg)', 'Armada']]
+        table_data = [['Kecamatan', 'Ritase', 'Tonase (Kg)', 'Armada', 'Rata Durasi (menit)']]
         for _, row in df_kec.head(5).iterrows():
-            table_data.append([row['Kecamatan'], str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}", str(row['Jumlah_Armada'])])
-        t = Table(table_data, colWidths=[150, 80, 100, 70])
+            table_data.append([row['Kecamatan'], str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}", str(row['Jumlah_Armada']), f"{row.get('Rata_Durasi_Menit', '-'):.1f}" if 'Rata_Durasi_Menit' in row else '-'])
+        t = Table(table_data, colWidths=[120, 60, 80, 60, 100])
         t.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1e3c72")),
             ('TEXTCOLOR', (0,0), (-1,0), colors.white),
@@ -610,7 +611,7 @@ with st.sidebar:
                     st.success(f"✅ Data berhasil diproses. {hasil['cleaned_count']} sheet diolah.")
                     st.balloons()
 
-# Tampilkan hasil (sama seperti sebelumnya)
+# Tampilkan hasil
 if st.session_state.hasil is not None:
     data = st.session_state.hasil
     df_master = data['df_master']
@@ -636,7 +637,7 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    st.subheader("📊 Ringkasan Seluruh Kecamatan")
+    st.subheader("📊 Ringkasan Seluruh Kecamatan (termasuk durasi)")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -649,6 +650,15 @@ if st.session_state.hasil is not None:
                          color_continuous_scale='Viridis', title='Total Tonase per Kecamatan', template='plotly_white')
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
+
+        # Grafik durasi per kecamatan
+        if 'Rata_Durasi_Menit' in df_kec.columns:
+            fig_dur_kec = px.bar(df_kec, x='Kecamatan', y='Rata_Durasi_Menit',
+                                 title='Rata-rata Durasi Pelayanan per Kecamatan (menit)',
+                                 color='Rata_Durasi_Menit', color_continuous_scale='Oranges',
+                                 template='plotly_white')
+            fig_dur_kec.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_dur_kec, use_container_width=True)
 
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
@@ -663,6 +673,14 @@ if st.session_state.hasil is not None:
                               color_continuous_scale='Blues', title='Total Tonase per Type', template='plotly_white')
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
+
+        # Grafik durasi per jenis armada
+        if 'Rata_Durasi_Menit' in df_type.columns:
+            fig_dur_type = px.bar(df_type, x='TYPE', y='Rata_Durasi_Menit',
+                                  title='Rata-rata Durasi Pelayanan per Jenis Armada (menit)',
+                                  color='Rata_Durasi_Menit', color_continuous_scale='Greens',
+                                  template='plotly_white')
+            st.plotly_chart(fig_dur_type, use_container_width=True)
 
     if not df_tren.empty:
         st.subheader("📈 Tren Harian (Semua Kecamatan)")
@@ -719,9 +737,10 @@ if st.session_state.hasil is not None:
         if col_netto:
             armada_kec = df_kec_filter.groupby(['NOPIN', 'NO_PLAT'], dropna=False).agg(
                 Total_Trip=('NOPIN', 'count'),
-                Total_Tonase=(col_netto, 'sum')
+                Total_Tonase=(col_netto, 'sum'),
+                Rata_Durasi=('DURASI_MENIT', 'mean') if 'DURASI_MENIT' in df_kec_filter.columns else pd.NamedAgg('NOPIN', lambda x: np.nan)
             ).reset_index().sort_values('Total_Trip', ascending=False)
-            st.dataframe(armada_kec.style.format({'Total_Tonase': '{:,.0f}'}), use_container_width=True)
+            st.dataframe(armada_kec.style.format({'Total_Tonase': '{:,.0f}', 'Rata_Durasi': '{:.1f}'}), use_container_width=True)
 
             fig_top_kec = px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip',
                                  color='Total_Trip', color_continuous_scale='Blues',
