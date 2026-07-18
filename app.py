@@ -42,27 +42,56 @@ def baca_semua_sheet(uploaded_file):
         except Exception: pass
     return sheets
 
-# -------------------------- Parsing Waktu Fleksibel --------------------------
+# -------------------------- Parsing Waktu Super Fleksibel --------------------------
 def parse_waktu(series):
-    if pd.api.types.is_datetime64_any_dtype(series): return series
-    if series.dtype == object: series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    # Jika objek, bersihkan
+    if series.dtype == object:
+        series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
+
+    # 1. Coba format jam murni (HH:MM:SS, HH:MM, dll.)
     for fmt in ['%H:%M:%S', '%H:%M', '%H.%M.%S', '%I:%M:%S %p', '%I:%M %p', '%H.%M']:
         dt = pd.to_datetime(series, format=fmt, errors='coerce')
-        if dt.notna().sum() > 0: return dt
+        if dt.notna().sum() > 0:
+            return dt
+
+    # 2. Coba format tanggal + jam (umum di Excel)
+    for fmt in ['%d/%m/%Y %H:%M:%S', '%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M',
+                '%d-%m-%Y %H:%M:%S', '%d-%m-%Y %H:%M', '%m/%d/%Y %H:%M:%S', '%m/%d/%Y %H:%M']:
+        dt = pd.to_datetime(series, format=fmt, errors='coerce', dayfirst=True)
+        if dt.notna().sum() > 0:
+            # Ambil hanya komponen waktunya
+            return dt.dt.time.apply(lambda t: pd.Timestamp('2026-01-01') + pd.Timedelta(hours=t.hour, minutes=t.minute, seconds=t.second))
+
+    # 3. Numerik (serial waktu Excel)
     if pd.api.types.is_numeric_dtype(series):
         try:
             hours = series * 24
             td = pd.to_timedelta(hours, unit='h')
             base = pd.Timestamp('2026-01-01')
-            return base + td
+            dt = base + td
+            return dt
         except: pass
-    return pd.to_datetime(series, errors='coerce', dayfirst=True)
+
+    # 4. Fallback otomatis (biarkan pandas mencoba)
+    dt = pd.to_datetime(series, errors='coerce', dayfirst=True)
+    if dt.notna().sum() > 0:
+        # Jika hasilnya datetime penuh, ambil waktunya saja
+        if (dt.dt.date != pd.Timestamp('2026-01-01').date()).any():
+            # Gabungkan tanggal default dengan jam dari hasil parse
+            return dt.dt.time.apply(lambda t: pd.Timestamp('2026-01-01') + pd.Timedelta(hours=t.hour, minutes=t.minute, seconds=t.second))
+        return dt
+    return dt
 
 def hitung_durasi(df_master):
+    # Kata kunci lebih luas
     keywords_masuk = ['MASUK', 'JAM MASUK', 'WAKTU MASUK', 'TIMBANG MASUK', 'JAM_1', 'TIMBANG1',
-                      'BERANGKAT', 'START', 'IN', 'TIME IN', 'JAM', 'WAKTU', 'ENTRY', 'JAM MASUK TPA']
+                      'BERANGKAT', 'START', 'IN', 'TIME IN', 'JAM', 'WAKTU', 'ENTRY', 'JAM MASUK TPA',
+                      'TANGGAL MASUK', 'TGL MASUK', 'TANGGAL JAM MASUK']
     keywords_keluar = ['KELUAR', 'JAM KELUAR', 'WAKTU KELUAR', 'TIMBANG KELUAR', 'JAM_2', 'TIMBANG2',
-                       'TIBA', 'END', 'OUT', 'TIME OUT', 'EXIT', 'JAM KELUAR TPA']
+                       'TIBA', 'END', 'OUT', 'TIME OUT', 'EXIT', 'JAM KELUAR TPA',
+                       'TANGGAL KELUAR', 'TGL KELUAR', 'TANGGAL JAM KELUAR']
 
     col_masuk, col_keluar = None, None
     for col in df_master.columns:
@@ -75,24 +104,38 @@ def hitung_durasi(df_master):
         st.info("ℹ️ Kolom jam masuk/keluar tidak ditemukan. Analisis durasi dilewati.")
         return df_master
 
+    # Simpan data asli
     df_master['MASUK_ORI'] = df_master[col_masuk].astype(str)
     df_master['KELUAR_ORI'] = df_master[col_keluar].astype(str)
     st.write(f"✅ Kolom waktu: **{col_masuk}** (masuk), **{col_keluar}** (keluar)")
 
+    # Tampilkan contoh data mentah
+    with st.expander("🔍 Lihat 10 data waktu mentah"):
+        st.dataframe(df_master[[col_masuk, col_keluar]].head(10))
+
     dt_masuk = parse_waktu(df_master[col_masuk])
     dt_keluar = parse_waktu(df_master[col_keluar])
-    if dt_masuk.notna().sum() > 0 and dt_keluar.notna().sum() > 0:
-        df_master['MASUK_DT'] = dt_masuk
-        df_master['KELUAR_DT'] = dt_keluar
+    valid_masuk = dt_masuk.notna().sum()
+    valid_keluar = dt_keluar.notna().sum()
+    st.write(f"Berhasil parsing: Masuk **{valid_masuk}**, Keluar **{valid_keluar}**")
+
+    if valid_masuk > 0 and valid_keluar > 0:
+        # Ubah ke datetime penuh agar bisa dihitung selisihnya
+        # (semua di set ke tanggal yang sama, misal 2026-01-01)
+        df_master['MASUK_DT'] = pd.to_datetime('2026-01-01') + pd.to_timedelta(dt_masuk.dt.hour * 3600 + dt_masuk.dt.minute * 60 + dt_masuk.dt.second, unit='s')
+        df_master['KELUAR_DT'] = pd.to_datetime('2026-01-01') + pd.to_timedelta(dt_keluar.dt.hour * 3600 + dt_keluar.dt.minute * 60 + dt_keluar.dt.second, unit='s')
+        # Hitung durasi menit
         df_master['DURASI_MENIT'] = (df_master['KELUAR_DT'] - df_master['MASUK_DT']).dt.total_seconds() / 60
+        # Filter outlier
         df_master = df_master[(df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)].copy()
-        try: df_master['JAM_INPUT'] = df_master['MASUK_DT'].dt.hour
+        try: df_master['JAM_INPUT'] = dt_masuk.dt.hour
         except: pass
-        st.success(f"✅ Durasi dihitung, {len(df_master)} baris valid.")
-    else: st.warning("⚠️ Gagal parsing waktu.")
+        st.success(f"✅ Durasi berhasil dihitung. Tersisa {len(df_master)} baris dengan durasi valid.")
+    else:
+        st.warning("⚠️ Gagal mengonversi waktu. Periksa format di Excel (contoh: 08:30:00 atau 08.30).")
     return df_master
 
-# -------------------------- Proses Data --------------------------
+# -------------------------- Proses Data (sama seperti sebelumnya) --------------------------
 def proses_list_armada(sheets_dict, armada_sheet, config):
     df_arm_raw = sheets_dict[armada_sheet].copy()
     ref_df, ref_dict = None, {}
@@ -344,18 +387,11 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
 
 # -------------------------- Clustering K‑Means --------------------------
 def lakukan_clustering(df_armada, n_clusters=3):
-    """
-    Melakukan K‑Means clustering pada data armada berdasarkan fitur:
-    Total_Trip, Total_Tonase, dan (jika tersedia) Rata_Durasi.
-    Mengembalikan DataFrame dengan kolom 'Cluster' serta dict ringkasan.
-    """
     if df_armada.empty or len(df_armada) < n_clusters:
         return None, None
 
-    # Pilih fitur numerik
     fitur_cols = ['Total_Trip', 'Total_Tonase']
     if 'Rata_Durasi' in df_armada.columns:
-        # hanya ambil data yang memiliki durasi valid
         mask_dur = df_armada['Rata_Durasi'].notna()
         df_fitur = df_armada[mask_dur].copy()
         fitur_cols.append('Rata_Durasi')
@@ -366,16 +402,11 @@ def lakukan_clustering(df_armada, n_clusters=3):
         return None, None
 
     X = df_fitur[fitur_cols].values
-
-    # Standardisasi
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-
-    # K‑Means
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     df_fitur['Cluster'] = kmeans.fit_predict(X_scaled)
 
-    # Ringkasan per cluster
     ringkasan = df_fitur.groupby('Cluster').agg(
         Jumlah_Armada=('NOPIN', 'count'),
         Rata_Trip=('Total_Trip', 'mean'),
@@ -591,7 +622,7 @@ if "grafik" not in st.session_state: st.session_state.grafik = {}
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
+st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**. Data waktu masuk/keluar akan otomatis dihitung durasinya.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -660,7 +691,7 @@ with st.sidebar:
                 if hasil is None: st.error("Gagal memproses data.")
                 else:
                     st.session_state.hasil = hasil
-                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah.")
+                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Data waktu siap ditampilkan.")
                     st.balloons()
 
 # Tampilkan hasil
@@ -733,13 +764,13 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    # ---------- MASTER DATA (1000 BARIS PERTAMA) ----------
+    # ---------- MASTER DATA (1000 BARIS PERTAMA) – WAKTU DITAMPILKAN ----------
     st.subheader("📋 Master Data (1000 Baris Pertama, dengan No Urut)")
     cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
     if col_netto: cols_waktu.append(col_netto)
-    if 'MASUK_ORI' in df_master.columns: cols_waktu.append('MASUK_ORI')
-    if 'KELUAR_ORI' in df_master.columns: cols_waktu.append('KELUAR_ORI')
-    if 'DURASI_MENIT' in df_master.columns: cols_waktu.append('DURASI_MENIT')
+    # Pastikan kolom waktu selalu ditambahkan jika ada
+    for c in ['MASUK_ORI', 'KELUAR_ORI', 'DURASI_MENIT']:
+        if c in df_master.columns: cols_waktu.append(c)
 
     df_show = df_master.head(1000).copy()
     df_show.insert(0, 'No', range(1, len(df_show)+1))
@@ -845,7 +876,6 @@ if st.session_state.hasil is not None:
         df_cluster, ringkasan_cluster = lakukan_clustering(df_armada, n_clusters=n_clusters)
 
         if df_cluster is not None and ringkasan_cluster is not None:
-            # Scatter plot trip vs tonase
             fig_cluster = px.scatter(
                 df_cluster, x='Total_Trip', y='Total_Tonase', color='Cluster',
                 symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
@@ -863,16 +893,12 @@ if st.session_state.hasil is not None:
 
             st.plotly_chart(fig_cluster, use_container_width=True)
 
-            # Tabel ringkasan per cluster (PERBAIKAN)
             st.subheader("📊 Ringkasan per Cluster")
             ringkasan_disp = ringkasan_cluster.copy()
-            # Pastikan Cluster jadi kolom biasa, bukan index
             if 'Cluster' not in ringkasan_disp.columns:
                 ringkasan_disp = ringkasan_disp.reset_index()
-            # Atur urutan kolom agar Cluster di depan
             cols_order = ['Cluster'] + [c for c in ringkasan_disp.columns if c != 'Cluster']
             ringkasan_disp = ringkasan_disp[cols_order]
-
             st.dataframe(
                 ringkasan_disp.style.format({
                     'Jumlah_Armada': '{:.0f}',
@@ -884,7 +910,6 @@ if st.session_state.hasil is not None:
                 hide_index=True
             )
 
-            # Anggota per cluster (expander)
             with st.expander("📋 Lihat Anggota per Cluster"):
                 cluster_list = sorted(df_cluster['Cluster'].unique())
                 for c in cluster_list:
