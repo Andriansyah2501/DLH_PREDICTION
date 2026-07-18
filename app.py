@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import plotly.io as pio
 import requests
 import os
@@ -9,19 +10,28 @@ from io import BytesIO
 from datetime import datetime
 
 # ==================== KONFIGURASI HALAMAN ====================
-st.set_page_config(page_title="Dashboard DLH Armada – Full Analysis", page_icon="🚛", layout="wide")
+st.set_page_config(
+    page_title="Dashboard DLH Armada – Full Analysis",
+    page_icon="🚛",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
+# Kustom CSS untuk tampilan profesional
 st.markdown("""
 <style>
     .metric-card {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         border-radius: 16px; padding: 24px; color: white;
         box-shadow: 0 4px 12px rgba(0,0,0,0.15); text-align: center;
+        transition: transform 0.2s;
     }
+    .metric-card:hover { transform: translateY(-5px); }
     .metric-value { font-size: 2.6rem; font-weight: 800; margin: 8px 0; }
     .metric-label { font-size: 1rem; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px; }
     .stButton button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; transition: 0.3s; }
     .stButton button:hover { transform: scale(1.02); box-shadow: 0 4px 15px rgba(102,126,234,0.4); }
+    .download-section { background: #f9fafb; padding: 20px; border-radius: 12px; margin-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -30,11 +40,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
 def laporan_ai(statistik: str) -> str:
+    """Menghasilkan laporan analisis menggunakan DeepSeek AI."""
     if not DEEPSEEK_API_KEY:
-        return "⚠️ API Key DeepSeek belum diatur. Lewati laporan AI."
+        return "⚠️ API Key DeepSeek belum diatur. Laporan AI tidak dapat dibuat."
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     prompt = f"""
-Anda analis data armada DLH. Buat laporan singkat (3 paragraf) dalam bahasa Indonesia dari statistik berikut:
+Anda adalah analis data armada DLH. Buat laporan singkat (3 paragraf) dalam bahasa Indonesia dari statistik berikut:
 {statistik}
 Sertakan:
 1. Gambaran umum performa armada.
@@ -79,28 +90,23 @@ def process_dlh_data(sheets_dict, uploaded_file):
     """
     Alur lengkap sesuai notebook dlh.ipynb:
     1. Baca List Armada (header otomatis).
-    2. Proses sheet harian (nama digit 1-30).
-    3. Bersihkan dan sinkronkan dengan master.
-    4. Gabungkan menjadi Master Data.
+    2. Proses 30 sheet harian (nama digit).
+    3. Bersihkan & sinkronkan dengan master.
+    4. Gabungkan jadi Master Data.
     5. Hitung agregasi untuk tiap poin analisis.
-    Mengembalikan (df_master, semua_dataframe_hasil, ringkasan_teks)
+    Mengembalikan (df_master, semua_dataframe_hasil)
     """
     # === 1. Cari sheet List Armada ===
     armada_sheet = next((s for s in sheets_dict if 'list armada' in s.lower()), None)
     if armada_sheet is None:
         armada_sheet = next((s for s in sheets_dict if 'armada' in s.lower()), None)
     if armada_sheet is None:
-        st.error("❌ Sheet 'List Armada' tidak ditemukan.")
-        return None, None, None
+        st.error("❌ Sheet 'List Armada' tidak ditemukan dalam file.")
+        return None, None
 
-    # === 2. Baca referensi armada (deteksi header) ===
+    # === 2. Baca referensi armada (header=1 seperti notebook) ===
     df_arm_raw = sheets_dict[armada_sheet]
-    header_arm = 0
-    for idx, row in df_arm_raw.iterrows():
-        row_str = " ".join(row.astype(str).dropna().str.upper().values)
-        if 'NOPIN' in row_str or 'NO.PLAT' in row_str:
-            header_arm = idx
-            break
+    header_arm = 1  # notebook pakai header=1
     xls = pd.ExcelFile(uploaded_file)
     df_ref = pd.read_excel(xls, sheet_name=armada_sheet, header=header_arm)
     df_ref.columns = [str(c).strip().upper() for c in df_ref.columns]
@@ -114,7 +120,7 @@ def process_dlh_data(sheets_dict, uploaded_file):
 
     if not col_nopin or not col_plat:
         st.error(f"Kolom NOPIN / Plat tidak ditemukan di sheet '{armada_sheet}'.")
-        return None, None, None
+        return None, None
 
     # Buat dictionary referensi (NOPIN → info armada)
     df_ref['NOPIN'] = df_ref[col_nopin].astype(str).str.strip().str.upper()
@@ -131,8 +137,8 @@ def process_dlh_data(sheets_dict, uploaded_file):
             entry['TYPE'] = str(row[col_type]).strip() if pd.notna(row[col_type]) else ''
         ref_dict[nopin] = entry
 
-    # === 3. Proses sheet harian ===
-    daily_sheets = [s for s in sheets_dict if s.isdigit()]  # sheet bernama angka (1–30)
+    # === 3. Proses sheet harian (1-30) ===
+    daily_sheets = [s for s in sheets_dict if s.isdigit()]
     if not daily_sheets:
         daily_sheets = [s for s in sheets_dict if s != armada_sheet and s not in ['Tugas', 'Master Data']]
 
@@ -146,7 +152,7 @@ def process_dlh_data(sheets_dict, uploaded_file):
         progress_bar.progress((i+1)/len(daily_sheets))
 
         df_raw = sheets_dict[hari]
-        # Cari baris header (mengandung "PINTU", "PLAT MOBIL", atau "NOPIN")
+        # Deteksi header – cari baris dengan "PINTU", "PLAT MOBIL", atau "NOPIN"
         header_harian = None
         for idx, row in df_raw.iterrows():
             row_str = " ".join(row.astype(str).dropna().str.upper().values)
@@ -166,7 +172,7 @@ def process_dlh_data(sheets_dict, uploaded_file):
 
         df_hari.rename(columns={col_nopin_h: 'NOPIN', col_plat_h: 'NO_PLAT'}, inplace=True)
 
-        # Pembersihan
+        # Pembersihan seperti notebook
         df_hari = df_hari.dropna(subset=['NOPIN'])
         df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
         df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
@@ -184,7 +190,6 @@ def process_dlh_data(sheets_dict, uploaded_file):
             return row
 
         df_hari = df_hari.apply(sinkron, axis=1)
-        # Tanggal: 2026-06-{hari}
         df_hari['TANGGAL'] = f"2026-06-{int(hari):02d}" if hari.isdigit() else hari
 
         cleaned_sheets[hari] = df_hari
@@ -195,7 +200,7 @@ def process_dlh_data(sheets_dict, uploaded_file):
 
     if not cleaned_sheets:
         st.error("Tidak ada sheet harian yang berhasil diproses.")
-        return None, None, None
+        return None, None
 
     # Gabungkan semua data harian
     df_master = pd.concat(cleaned_sheets.values(), ignore_index=True)
@@ -208,7 +213,6 @@ def process_dlh_data(sheets_dict, uploaded_file):
     # Tentukan kolom Netto utama (untuk perhitungan tonase)
     col_netto = cari_kolom(df_master.columns, ['NETTO'])
     if not col_netto:
-        # Coba pakai TOTAL atau JUMLAH jika Netto tidak ada
         col_netto = cari_kolom(df_master.columns, ['TOTAL', 'JUMLAH'])
 
     # === 4. Analisis Waktu (jika ada kolom jam) ===
@@ -218,7 +222,6 @@ def process_dlh_data(sheets_dict, uploaded_file):
         df_master['WAKTU_MASUK_DT'] = pd.to_datetime(df_master[col_masuk], format='%H:%M:%S', errors='coerce')
         df_master['WAKTU_KELUAR_DT'] = pd.to_datetime(df_master[col_keluar], format='%H:%M:%S', errors='coerce')
         df_master['DURASI_MENIT'] = (df_master['WAKTU_KELUAR_DT'] - df_master['WAKTU_MASUK_DT']).dt.total_seconds() / 60
-        # Filter durasi yang tidak wajar
         df_master = df_master[(df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)]
         try:
             df_master['JAM_INPUT'] = pd.to_datetime(df_master[col_masuk], format='%H:%M:%S', errors='coerce').dt.hour
@@ -238,7 +241,14 @@ def process_dlh_data(sheets_dict, uploaded_file):
 
     # Poin 3: Performa per Armada
     if col_netto:
-        df_armada_performa = df_master.groupby(['NOPIN', 'NO_PLAT', 'Kecamatan', 'TYPE', 'MERK']).agg(
+        group_cols = ['NOPIN', 'NO_PLAT']
+        if 'Kecamatan' in df_master.columns:
+            group_cols.append('Kecamatan')
+        if 'TYPE' in df_master.columns:
+            group_cols.append('TYPE')
+        if 'MERK' in df_master.columns:
+            group_cols.append('MERK')
+        df_armada_performa = df_master.groupby(group_cols).agg(
             Total_Trip=('NOPIN', 'count'),
             Total_Netto_Kg=(col_netto, 'sum')
         ).reset_index()
@@ -272,12 +282,7 @@ def process_dlh_data(sheets_dict, uploaded_file):
         if 'JAM_INPUT' in df_waktu_valid.columns:
             df_jam_puncak = df_waktu_valid.groupby('JAM_INPUT').size().reset_index(name='Jumlah_Truk_Masuk').sort_values('JAM_INPUT')
 
-    # Poin 6: Visualisasi akan dibuat di main() menggunakan dataframe di atas
-
-    # Poin 7: Ringkasan Eksekutif akan dibuat di main()
-    st.success(f"✅ Data siap: {total_baris} baris dari {len(cleaned_sheets)} sheet.")
-
-    # Kembalikan semua dataframe hasil
+    st.success(f"✅ Data siap: {total_baris} baris dari {len(cleaned_sheets)} sheet harian.")
     return df_master, (df_kecamatan, df_armada_performa, df_tren_harian, df_durasi_kec, df_jam_puncak)
 
 # ==================== SESSION STATE ====================
@@ -294,7 +299,8 @@ def main():
     st.markdown("Unggah file Excel dengan sheet **List Armada** dan 30 sheet harian. Dashboard ini menjalankan **seluruh analisis notebook DLH** secara otomatis.")
 
     with st.sidebar:
-        uploaded_file = st.file_uploader("📂 Pilih file Excel", type=["xlsx", "xls"])
+        st.markdown("## 📂 Unggah File Excel")
+        uploaded_file = st.file_uploader("Pilih file .xlsx atau .xls", type=["xlsx", "xls"])
         if uploaded_file:
             st.success("File siap diproses")
 
@@ -317,6 +323,7 @@ def main():
              df_durasi_kec, df_jam_puncak) = st.session_state.dataframes
 
             # ========== SIDEBAR FILTER ==========
+            st.sidebar.markdown("---")
             st.sidebar.header("🔍 Filter Data")
             if 'Kecamatan' in df_master.columns:
                 kec_list = ['Semua'] + sorted(df_master['Kecamatan'].dropna().unique().tolist())
@@ -344,10 +351,14 @@ def main():
             rata_durasi = df_filtered['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df_filtered.columns else 0
 
             col1, col2, col3, col4 = st.columns(4)
-            col1.markdown(f'<div class="metric-card"><div class="metric-label">Total Trip</div><div class="metric-value">{total_trip}</div></div>', unsafe_allow_html=True)
-            col2.markdown(f'<div class="metric-card"><div class="metric-label">Armada Aktif</div><div class="metric-value">{total_armada}</div></div>', unsafe_allow_html=True)
-            col3.markdown(f'<div class="metric-card"><div class="metric-label">Total Tonase (Ton)</div><div class="metric-value">{total_tonase:,.1f}</div></div>', unsafe_allow_html=True)
-            col4.markdown(f'<div class="metric-card"><div class="metric-label">Rata² Durasi (menit)</div><div class="metric-value">{rata_durasi:.1f}</div></div>', unsafe_allow_html=True)
+            with col1:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Total Trip</div><div class="metric-value">{total_trip}</div></div>', unsafe_allow_html=True)
+            with col2:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Armada Aktif</div><div class="metric-value">{total_armada}</div></div>', unsafe_allow_html=True)
+            with col3:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Total Tonase (Ton)</div><div class="metric-value">{total_tonase:,.1f}</div></div>', unsafe_allow_html=True)
+            with col4:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Rata² Durasi (menit)</div><div class="metric-value">{rata_durasi:.1f}</div></div>', unsafe_allow_html=True)
 
             st.markdown("---")
 
@@ -355,8 +366,9 @@ def main():
             # 1. Tren Ritase Harian
             if not df_tren_harian.empty:
                 fig_tren = px.line(df_tren_harian, x='TANGGAL', y='Total_Ritase_Trip',
-                                   title='📈 Tren Frekuensi Ritase Harian', markers=True)
-                fig_tren.update_traces(line_color='#0D9488', line_width=3)
+                                   title='📈 Tren Frekuensi Ritase Harian (Juni 2026)', markers=True)
+                fig_tren.update_traces(line_color='#0D9488', line_width=3, marker_size=8)
+                fig_tren.update_layout(template='plotly_white')
                 st.plotly_chart(fig_tren, use_container_width=True)
                 st.session_state.figures['tren'] = fig_tren
 
@@ -364,16 +376,18 @@ def main():
             if not df_kecamatan.empty:
                 fig_kec = px.bar(df_kecamatan, x='Kecamatan', y='Total_Tonase_Bersih',
                                  color='Total_Tonase_Bersih', color_continuous_scale='Viridis',
-                                 title='📦 Total Tonase per Kecamatan')
-                fig_kec.update_layout(xaxis_tickangle=-45)
+                                 title='📦 Total Volume Sampah per Kecamatan (Kg)')
+                fig_kec.update_layout(xaxis_tickangle=-45, template='plotly_white')
                 st.plotly_chart(fig_kec, use_container_width=True)
                 st.session_state.figures['kec'] = fig_kec
 
             # 3. Pola Kedatangan per Jam (jika tersedia)
             if not df_jam_puncak.empty:
                 fig_jam = px.area(df_jam_puncak, x='JAM_INPUT', y='Jumlah_Truk_Masuk',
-                                  title='⏰ Pola Kedatangan Truk per Jam')
+                                  title='⏰ Pola Kedatangan Truk per Jam (Jembatan Timbang)')
                 fig_jam.update_xaxes(dtick=1)
+                fig_jam.update_traces(fillcolor='rgba(30, 58, 138, 0.4)', line_color='#1E3A8A')
+                fig_jam.update_layout(template='plotly_white')
                 st.plotly_chart(fig_jam, use_container_width=True)
                 st.session_state.figures['jam'] = fig_jam
 
@@ -381,45 +395,71 @@ def main():
             if not df_armada_performa.empty:
                 top10 = df_armada_performa.head(10)
                 fig_top = px.bar(top10, x='NOPIN', y='Total_Trip', color='Total_Trip',
+                                 color_continuous_scale='OrRd',
                                  title='🏆 10 Armada dengan Trip Terbanyak')
+                fig_top.update_layout(xaxis_tickangle=-45, template='plotly_white')
                 st.plotly_chart(fig_top, use_container_width=True)
                 st.session_state.figures['top'] = fig_top
 
             # ========== RINGKASAN EKSEKUTIF (POIN 7) ==========
-            st.subheader("📝 Ringkasan Eksekutif (Otomatis)")
-            kec_tertinggi = df_kecamatan.iloc[0]['Kecamatan'] if not df_kecamatan.empty else "N/A"
-            tonase_tertinggi = df_kecamatan.iloc[0]['Total_Tonase_Bersih'] / 1000 if not df_kecamatan.empty else 0
-            hari_tertinggi = df_tren_harian.loc[df_tren_harian['Total_Ritase_Trip'].idxmax()]['TANGGAL'] if not df_tren_harian.empty else "N/A"
-            trip_tertinggi = df_tren_harian.loc[df_tren_harian['Total_Ritase_Trip'].idxmax()]['Total_Ritase_Trip'] if not df_tren_harian.empty else 0
+            st.markdown("---")
+            st.header("📝 Ringkasan Eksekutif & Rekomendasi Strategis")
 
-            ringkasan = f"""
-**1. Ringkasan Operasional Juni 2026:**
-- Total armada aktif: **{total_armada} unit**
-- Total trip (ritase): **{total_trip}**
-- Total volume sampah: **{total_tonase:,.1f} Ton**
-- Wilayah dengan beban tertinggi: **{kec_tertinggi}** ({tonase_tertinggi:,.1f} Ton)
-- Hari tersibuk: **{hari_tertinggi}** ({trip_tertinggi} trip)
+            # Ambil data untuk ringkasan
+            if not df_kecamatan.empty:
+                kec_tertinggi = df_kecamatan.iloc[0]['Kecamatan']
+                tonase_tertinggi = df_kecamatan.iloc[0]['Total_Tonase_Bersih'] / 1000
+            else:
+                kec_tertinggi = "N/A"
+                tonase_tertinggi = 0
+            if not df_tren_harian.empty:
+                hari_puncak_ritase = df_tren_harian.loc[df_tren_harian['Total_Ritase_Trip'].idxmax(), 'TANGGAL']
+                trip_puncak = int(df_tren_harian['Total_Ritase_Trip'].max())
+            else:
+                hari_puncak_ritase = "N/A"
+                trip_puncak = 0
 
-**2. Rekomendasi Strategis:**
-- **Alokasi Armada:** Prioritaskan penambahan unit di Kecamatan **{kec_tertinggi}**.
-- **Manajemen Waktu:** Atur shift kedatangan untuk mengurangi antrean di jam sibuk.
-- **Pemeliharaan:** Unit dengan trip rendah perlu dievaluasi mekanis.
-"""
-            st.markdown(ringkasan)
+            col_left, col_right = st.columns(2)
+            with col_left:
+                st.markdown(f"""
+                **Ringkasan Operasional Juni 2026:**
+                - Total armada aktif: **{total_armada} unit**
+                - Total trip (ritase): **{total_trip}**
+                - Total volume sampah: **{total_tonase:,.1f} Ton**
+                - Wilayah beban tertinggi: **{kec_tertinggi}** ({tonase_tertinggi:,.1f} Ton)
+                - Hari tersibuk: **{hari_puncak_ritase}** ({trip_puncak} trip)
+                """)
+            with col_right:
+                st.markdown(f"""
+                **Rekomendasi Strategis:**
+                - **Alokasi Armada:** Prioritaskan penambahan unit di Kecamatan **{kec_tertinggi}** untuk mencegah penumpukan sampah.
+                - **Manajemen Waktu:** Atur shift kedatangan agar tidak menumpuk di jam sibuk.
+                - **Pemeliharaan:** Unit dengan trip rendah perlu evaluasi mekanis dan penjadwalan ulang.
+                """)
 
             # ========== LAPORAN AI (opsional) ==========
+            st.markdown("---")
             st.subheader("🤖 Laporan Cerdas (DeepSeek AI)")
             if st.button("🔮 Buat Laporan AI"):
+                statistik_teks = f"""
+Total trip: {total_trip}
+Armada aktif: {total_armada}
+Total tonase: {total_tonase:,.1f} Ton
+Kecamatan tertinggi: {kec_tertinggi} ({tonase_tertinggi:,.1f} Ton)
+Hari tersibuk: {hari_puncak_ritase} ({trip_puncak} trip)
+Rata-rata durasi: {rata_durasi:.1f} menit
+"""
                 with st.spinner("Menghubungi DeepSeek..."):
-                    st.session_state.laporan_teks = laporan_ai(ringkasan)
+                    st.session_state.laporan_teks = laporan_ai(statistik_teks)
                 st.markdown("### 📄 Laporan AI")
                 st.write(st.session_state.laporan_teks)
             else:
-                st.info("Klik tombol di atas untuk menghasilkan laporan otomatis (API Key diperlukan).")
+                st.info("Klik tombol di atas untuk menghasilkan laporan otomatis dari DeepSeek AI (API Key diperlukan).")
 
             # ========== UNDUH SEMUA FILE (SEPERTI NOTEBOOK) ==========
             st.markdown("---")
-            st.markdown("## 📥 Unduh Semua Hasil Analisis (Lengkap)")
+            st.header("📥 Unduh Semua Hasil Analisis")
+            st.markdown("Semua file di bawah ini sesuai dengan output notebook `dlh.ipynb`.")
 
             @st.cache_data
             def to_excel(df, sheet_name='Sheet1'):
@@ -435,21 +475,24 @@ def main():
                     label="📊 Master Data Gabungan (Poin 1)",
                     data=to_excel(df_master, 'Master Data'),
                     file_name="Master_Data_Gabungan_Juni_2026.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
                 )
                 if not df_kecamatan.empty:
                     st.download_button(
                         label="📊 Laporan per Kecamatan (Poin 2)",
                         data=to_excel(df_kecamatan, 'Per Kecamatan'),
-                        file_name="Laporan_Kecamatan_Poin2.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        file_name="Laporan_Analisis_Kecamatan_Poin2.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
                 if not df_armada_performa.empty:
                     st.download_button(
                         label="📊 Performa Armada (Poin 3)",
                         data=to_excel(df_armada_performa, 'Performa Armada'),
-                        file_name="Laporan_Performa_Armada_Poin3.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        file_name="Laporan_Performa_Tonase_Armada_Poin3.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
             with col_d2:
                 if not df_tren_harian.empty:
@@ -457,27 +500,38 @@ def main():
                         label="📈 Tren Harian (Poin 4)",
                         data=to_excel(df_tren_harian, 'Tren Harian'),
                         file_name="Laporan_Tren_Harian_Poin4.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
                 if not df_durasi_kec.empty:
                     st.download_button(
                         label="⏱️ Efisiensi Waktu (Poin 5)",
                         data=to_excel(df_durasi_kec, 'Efisiensi Waktu'),
                         file_name="Laporan_Efisiensi_Waktu_Poin5.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
                 # Ringkasan eksekutif dalam bentuk TXT
+                ringkasan_teks = f"""LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM (JUNI 2026)
+Total Armada Aktif: {total_armada} Unit
+Total Ritase: {total_trip} Trip
+Total Tonase Bersih: {total_tonase:,.1f} Ton
+Kecamatan Tertinggi: {kec_tertinggi} ({tonase_tertinggi:,.1f} Ton)
+Hari Tersibuk: {hari_puncak_ritase} ({trip_puncak} Trip)
+"""
                 st.download_button(
                     label="📝 Ringkasan Eksekutif (TXT)",
-                    data=ringkasan.encode('utf-8'),
+                    data=ringkasan_teks.encode('utf-8'),
                     file_name="Ringkasan_Eksekutif_Poin7.txt",
-                    mime="text/plain"
+                    mime="text/plain",
+                    use_container_width=True
                 )
             with col_d3:
                 # Pilih grafik untuk diunduh sebagai PNG
                 pilihan_grafik = st.selectbox(
                     "Pilih grafik untuk diunduh (PNG)",
-                    ["Tren Ritase", "Tonase per Kecamatan", "Jam Sibuk", "Top Armada"]
+                    ["Tren Ritase", "Tonase per Kecamatan", "Jam Sibuk", "Top Armada"],
+                    key="pilih_grafik"
                 )
                 fig_map = {
                     'Tren Ritase': 'tren',
@@ -493,18 +547,26 @@ def main():
                             label=f"📸 Unduh Grafik {pilihan_grafik} (PNG)",
                             data=img_bytes,
                             file_name=f"Grafik_{pilihan_grafik.replace(' ', '_')}.png",
-                            mime="image/png"
+                            mime="image/png",
+                            use_container_width=True
                         )
                     except Exception as e:
-                        st.warning(f"Gagal mengunduh grafik: {e}. Pastikan kaleido terinstal.")
+                        st.warning(f"Gagal mengunduh grafik: {e}. Pastikan kaleido terinstal (pip install kaleido).")
                 # Laporan AI
                 if st.session_state.laporan_teks:
                     st.download_button(
                         label="🤖 Laporan AI (TXT)",
                         data=st.session_state.laporan_teks.encode('utf-8'),
                         file_name="Laporan_AI_DeepSeek.txt",
-                        mime="text/plain"
+                        mime="text/plain",
+                        use_container_width=True
                     )
+                else:
+                    st.markdown("*(Buat laporan AI terlebih dahulu)*")
+
+            # ========== TAMPILKAN DATA MENTAH (opsional) ==========
+            with st.expander("🔎 Lihat Master Data Mentah"):
+                st.dataframe(df_master.head(100))
 
     else:
         st.info("👆 Silakan unggah file Excel Anda untuk memulai analisis lengkap.")
