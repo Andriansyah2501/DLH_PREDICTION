@@ -70,7 +70,7 @@ def hitung_durasi(df_master):
         if col_masuk and col_keluar: break
 
     if not col_masuk or not col_keluar:
-        st.info("ℹ️ Kolom jam masuk/keluar tidak ditemukan.")
+        st.info("ℹ️ Kolom jam masuk/keluar tidak ditemukan. Analisis durasi dilewati.")
         return df_master
 
     df_master['MASUK_ORI'] = df_master[col_masuk].astype(str)
@@ -398,7 +398,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     styles = getSampleStyleSheet()
     story = []
 
-    # Warna
     PRIMARY = colors.HexColor("#1E3A8A")
     SECONDARY = colors.HexColor("#0D9488")
     TEXT_DARK = colors.HexColor("#1F2937")
@@ -411,7 +410,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     analysis_style = ParagraphStyle('Analysis', parent=styles['Normal'], fontSize=9, leading=14, textColor=colors.HexColor("#374151"),
                                     backColor=BG_LIGHT, borderColor=SECONDARY, borderWidth=0.5, borderPadding=8, spaceBefore=4, spaceAfter=12)
 
-    # Ekstrak data
     df_master = data['df_master']
     col_netto = data['col_netto']
     df_kec = data['df_kec']
@@ -430,10 +428,16 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     story.append(Paragraph("LAPORAN AKHIR KOMPREHENSIF HASIL EVALUASI DATA", title_style))
     story.append(Paragraph("Konsolidasi Log Jembatan Timbang Dinas Lingkungan Hidup Kota Batam • Periode Juni 2026", subtitle_style))
 
-    # Poin 1 & 2: Konsolidasi & Tabel Wilayah
-    story.append(Paragraph("Poin 1.0 & 2.0: Konsolidasi Master Data & Sebaran Wilayah Kerja", h1_style))
-    story.append(Paragraph(f"Proses <i>data cleaning</i> dan rekonsiliasi vertikal terhadap 30 sheet harian telah diselesaikan dengan sukses menggunakan validasi <i>List Armada</i> sebagai acuan utama. Berdasarkan audit log, ditemukan total <b>{total_armada}</b> unit armada yang beroperasi aktif sepanjang bulan Juni 2026, dengan total frekuensi muatan sebanyak <b>{total_ritase:,} kali trip</b> dan akumulasi volume bersih seberat <b>{total_tonase_ton:,} Ton</b> sampah.", body_style))
+    # Poin 1.0: Penggabungan Data
+    story.append(Paragraph("Poin 1.0: Penggabungan Data Harian (Konsolidasi Juni 2026)", h1_style))
+    story.append(Paragraph(f"✔ Status Penggabungan  : SUKSES GABUNG ({data['cleaned_count']} Sheet Harian)", body_style))
+    story.append(Paragraph(f"✔ Periode Data         : Juni 2026", body_style))
+    story.append(Paragraph(f"✔ Total Baris Aktivitas: {df_master.shape[0]} baris log armada", body_style))
+    story.append(Paragraph(f"✔ Total Kolom Terdata  : {df_master.shape[1]} kolom", body_style))
+    story.append(Spacer(1, 10))
 
+    # Poin 2.0: Sebaran Wilayah
+    story.append(Paragraph("Poin 2.0: Kategorisasi Data Berdasarkan Wilayah Kecamatan", h1_style))
     if not df_kec.empty:
         table_data_kec = [["Kecamatan", "Armada Aktif", "Total Ritase (Trip)", "Total Tonase (Kg)"]]
         for _, row in df_kec.iterrows():
@@ -467,7 +471,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
 
     # Poin 4 & 6: Tren Harian, Visualisasi
     story.append(Paragraph("Poin 4.0 & 6.0: Tren Produktivitas Harian & Dashboard Laporan Visual", h1_style))
-
     if 'tren' in grafik_dict and grafik_dict['tren'] is not None:
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
             grafik_dict['tren'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
@@ -621,6 +624,22 @@ if st.session_state.hasil is not None:
     df_waktu_jenis = data['df_waktu_jenis']
     df_tren = data['df_tren']
 
+    # ========== POIN 1.0: PENGGABUNGAN DATA ==========
+    st.header("📋 Poin 1.0: Penggabungan Data Harian (Konsolidasi)")
+    col_prioritas = ['TANGGAL', 'NOPIN', 'NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']
+    kolom_sisa = [col for col in df_master.columns if col not in col_prioritas]
+    df_jawaban_1 = df_master[col_prioritas + kolom_sisa]
+
+    st.markdown(f"✔ **Status Penggabungan** : SUKSES GABUNG ({data['cleaned_count']} Sheet Harian)")
+    st.markdown(f"✔ **Periode Data** : Juni 2026")
+    st.markdown(f"✔ **Total Baris Aktivitas** : {df_jawaban_1.shape[0]} baris log armada")
+    st.markdown(f"✔ **Total Kolom Terdata** : {df_jawaban_1.shape[1]} kolom")
+    st.markdown("**10 Sampel Data Pertama Master Data:**")
+    st.dataframe(df_jawaban_1.head(10), use_container_width=True)
+
+    st.markdown("---")
+
+    # ========== ANALISIS GLOBAL ==========
     st.header("📊 Analisis Keseluruhan (Global)")
     total_trip_global = len(df_master)
     total_armada_global = df_master['NOPIN'].nunique()
@@ -634,8 +653,7 @@ if st.session_state.hasil is not None:
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
     # Master Data
-    st.markdown("---")
-    st.header("📋 Master Data (Termasuk Waktu Masuk & Keluar)")
+    st.subheader("📋 Master Data (Termasuk Waktu Masuk & Keluar)")
     cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
     if col_netto: cols_waktu.append(col_netto)
     if 'MASUK_ORI' in df_master.columns: cols_waktu.append('MASUK_ORI')
