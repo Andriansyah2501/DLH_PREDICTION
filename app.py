@@ -11,9 +11,16 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 import tempfile
 import os
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, confusion_matrix, classification_report, accuracy_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.model_selection import train_test_split
+import joblib
 
 # -------------------------- Fungsi Bantu --------------------------
 def normalisasi_nopin(val):
@@ -430,6 +437,46 @@ def plot_elbow(X_scaled, max_k=8):
     fig_sil.update_layout(xaxis_title='Jumlah Cluster', yaxis_title='Silhouette Score')
     return fig_elbow, fig_sil
 
+# -------------------------- Modelling (TAMBAHAN BARU) --------------------------
+def latih_model_klasifikasi(df_fitur, fitur_cols, model_type='Random Forest'):
+    """Latih model klasifikasi berdasarkan label cluster."""
+    X = df_fitur[fitur_cols].values
+    y = df_fitur['Cluster'].values
+
+    # Scaling
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42, stratify=y)
+
+    # Pilih model
+    if model_type == 'KNN':
+        model = KNeighborsClassifier(n_neighbors=3)
+    elif model_type == 'Decision Tree':
+        model = DecisionTreeClassifier(random_state=42)
+    elif model_type == 'Random Forest':
+        model = RandomForestClassifier(random_state=42)
+    elif model_type == 'SVM':
+        model = SVC(random_state=42)
+    elif model_type == 'Naive Bayes':
+        model = GaussianNB()
+    else:
+        return None, None, None, None, None
+
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    acc = accuracy_score(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
+    cr = classification_report(y_test, y_pred, output_dict=True)
+
+    # Simpan model
+    joblib.dump(model, 'model_cluster.pkl')
+    joblib.dump(scaler, 'scaler.pkl')
+
+    return model, scaler, acc, cm, cr
+
 # -------------------------- Ringkasan Eksekutif --------------------------
 def buat_ringkasan_eksekutif(data):
     df = data['df_master']
@@ -631,7 +678,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     buffer.seek(0)
     return buffer
 
-# -------------------------- Generate PDF per Kecamatan (PERBAIKAN) --------------------------
+# -------------------------- Generate PDF per Kecamatan --------------------------
 def generate_pdf_per_kecamatan(kec_data, grafik_dict):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -687,7 +734,6 @@ def generate_pdf_per_kecamatan(kec_data, grafik_dict):
         story.append(t)
     story.append(Spacer(1, 12))
 
-    # --- Grafik (PERBAIKAN: simpan semua file sementara, hapus setelah build) ---
     temp_files = []
     if 'top_kec' in grafik_dict and grafik_dict['top_kec'] is not None:
         story.append(Paragraph("Visualisasi Armada Teraktif", heading_style))
@@ -704,14 +750,9 @@ def generate_pdf_per_kecamatan(kec_data, grafik_dict):
     story.append(Paragraph(rekom, normal_style))
 
     doc.build(story)
-
-    # Hapus file sementara setelah PDF selesai dibuat
     for f in temp_files:
-        try:
-            os.unlink(f)
-        except Exception:
-            pass
-
+        try: os.unlink(f)
+        except: pass
     buffer.seek(0)
     return buffer
 
@@ -879,7 +920,7 @@ if st.session_state.hasil is not None:
     st.dataframe(df_show[cols_ada], use_container_width=True, hide_index=True)
 
     # ---------- TABS ----------
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Ringkasan", "⏱️ Durasi", "📈 Tren", "🔬 Clustering (ML)"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Ringkasan", "⏱️ Durasi", "📈 Tren", "🔬 Clustering", "🤖 Modelling"])
 
     with tab1:
         st.subheader("📊 Ringkasan Seluruh Kecamatan")
@@ -1050,8 +1091,51 @@ if st.session_state.hasil is not None:
                             anggota = df_cluster[df_cluster['Cluster'] == c][['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']]
                         st.write(f"**Cluster {c}** ({len(anggota)} armada)")
                         st.dataframe(anggota, use_container_width=True)
+
+                # Simpan data clustering untuk digunakan di tab Modelling
+                st.session_state.df_cluster = df_cluster
+                st.session_state.fitur_cols = fitur_cols_elbow  # fitur yang sama dengan elbow
             else:
                 st.warning("Data tidak mencukupi untuk clustering.")
+
+    with tab5:
+        st.header("🤖 Modelling – Klasifikasi Cluster")
+        st.markdown("Latih model machine learning untuk memprediksi cluster armada berdasarkan fitur Trip, Tonase, dan Durasi (jika tersedia).")
+
+        if 'df_cluster' not in st.session_state or st.session_state.df_cluster is None:
+            st.warning("Silakan lakukan clustering terlebih dahulu di tab '🔬 Clustering'.")
+        else:
+            df_cluster = st.session_state.df_cluster
+            fitur_cols = st.session_state.fitur_cols
+
+            model_option = st.selectbox("Pilih Model", ["Random Forest", "KNN", "Decision Tree", "SVM", "Naive Bayes"])
+
+            if st.button("Latih Model"):
+                with st.spinner("Melatih model..."):
+                    model, scaler, acc, cm, cr = latih_model_klasifikasi(df_cluster, fitur_cols, model_option)
+
+                if model is not None:
+                    st.success(f"Model {model_option} berhasil dilatih!")
+                    st.metric("Akurasi", f"{acc:.2%}")
+
+                    st.subheader("Confusion Matrix")
+                    fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale='Blues',
+                                       labels=dict(x="Predicted", y="Actual"),
+                                       x=[f'Cluster {i}' for i in range(len(cm))],
+                                       y=[f'Cluster {i}' for i in range(len(cm))])
+                    st.plotly_chart(fig_cm, use_container_width=True)
+
+                    st.subheader("Classification Report")
+                    cr_df = pd.DataFrame(cr).transpose()
+                    st.dataframe(cr_df.style.format("{:.2f}"))
+
+                    # Tombol unduh model
+                    with open('model_cluster.pkl', 'rb') as f:
+                        st.download_button("📥 Unduh Model (PKL)", f, file_name='model_cluster.pkl')
+                    with open('scaler.pkl', 'rb') as f:
+                        st.download_button("📥 Unduh Scaler (PKL)", f, file_name='scaler.pkl')
+                else:
+                    st.error("Gagal melatih model.")
 
     # ---------- SIMPAN GRAFIK LAIN UNTUK PDF ----------
     st.session_state.grafik['kec_ton'] = fig_ton
@@ -1092,7 +1176,6 @@ if st.session_state.hasil is not None:
         else:
             st.session_state.grafik['top_kec'] = None
 
-        # Tombol PDF per kecamatan
         if not armada_kec.empty:
             if st.button("📥 Buat Laporan PDF Kecamatan", key=f"pdf_kec_{kec_terpilih}"):
                 armada_teraktif_kec = (armada_kec.iloc[0]['NOPIN'], armada_kec.iloc[0]['NO_PLAT'], int(armada_kec.iloc[0]['Total_Trip']))
