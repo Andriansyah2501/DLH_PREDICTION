@@ -40,17 +40,15 @@ def baca_semua_sheet(uploaded_file):
         except Exception: pass
     return sheets
 
-# -------------------------- Parsing Waktu Fleksibel --------------------------
+# -------------------------- Parsing Waktu (Sangat Kuat) --------------------------
 def parse_waktu(series):
     if pd.api.types.is_datetime64_any_dtype(series):
         return series
     if series.dtype == object:
         series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
-    # Coba berbagai format
     for fmt in ['%H:%M:%S', '%H:%M', '%H.%M.%S', '%I:%M:%S %p', '%I:%M %p', '%H.%M']:
         dt = pd.to_datetime(series, format=fmt, errors='coerce')
         if dt.notna().sum() > 0: return dt
-    # Numerik (serial Excel)
     if pd.api.types.is_numeric_dtype(series):
         try:
             hours = series * 24
@@ -58,7 +56,6 @@ def parse_waktu(series):
             base = pd.Timestamp('2026-01-01')
             return base + td
         except: pass
-    # Fallback otomatis
     return pd.to_datetime(series, errors='coerce', dayfirst=True)
 
 def hitung_durasi(df_master):
@@ -78,12 +75,12 @@ def hitung_durasi(df_master):
         st.info("ℹ️ Kolom jam masuk/keluar tidak ditemukan. Analisis durasi dilewati.")
         return df_master
 
-    # Simpan nama kolom asli untuk ditampilkan nanti
+    # Simpan data asli ke kolom baru
     df_master['MASUK_ORI'] = df_master[col_masuk].astype(str)
     df_master['KELUAR_ORI'] = df_master[col_keluar].astype(str)
 
     st.write(f"✅ Kolom waktu terdeteksi: **{col_masuk}** (masuk), **{col_keluar}** (keluar)")
-    with st.expander("🔍 Lihat 10 data waktu mentah"):
+    with st.expander("🔍 Lihat 10 data waktu mentah (hanya 2 kolom)"):
         st.dataframe(df_master[[col_masuk, col_keluar]].head(10))
 
     dt_masuk = parse_waktu(df_master[col_masuk])
@@ -96,7 +93,7 @@ def hitung_durasi(df_master):
         df_master['MASUK_DT'] = dt_masuk
         df_master['KELUAR_DT'] = dt_keluar
         df_master['DURASI_MENIT'] = (df_master['KELUAR_DT'] - df_master['MASUK_DT']).dt.total_seconds() / 60
-        # Hanya durasi yang valid
+        # Hanya durasi valid (0–300 menit)
         mask_valid = (df_master['DURASI_MENIT'] >= 0) & (df_master['DURASI_MENIT'] <= 300)
         df_master = df_master[mask_valid].copy()
         try:
@@ -107,7 +104,7 @@ def hitung_durasi(df_master):
         st.warning("⚠️ Gagal mengonversi waktu. Periksa format di Excel (contoh: 08:30:00 atau 08.30).")
     return df_master
 
-# -------------------------- Fungsi Proses Data --------------------------
+# -------------------------- Proses Data (List Armada, Sheet Harian, Master) --------------------------
 def proses_list_armada(sheets_dict, armada_sheet, config):
     df_arm_raw = sheets_dict[armada_sheet].copy()
     ref_df, ref_dict = None, {}
@@ -186,7 +183,7 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     no_plat_asli = df_hari['NO_PLAT'].copy() if 'NO_PLAT' in df_hari.columns else pd.Series('', index=df_hari.index)
 
-    # Saat sinkronisasi, hanya kolom identitas yang dihapus, kolom lain (termasuk waktu) tetap dipertahankan
+    # Sinkronisasi dengan master (hanya kolom identitas yang disentuh)
     if ref_df is not None and not ref_df.empty:
         for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
             if col in df_hari.columns: df_hari.drop(columns=[col], inplace=True)
@@ -287,7 +284,6 @@ def proses_master_sheet(sheets_dict, master_sheet_name):
         if col_kec: df_master['Kecamatan'] = df_master[col_kec].apply(normalisasi_kecamatan)
         else: df_master['Kecamatan'] = 'Tidak Diketahui'
 
-    # Pembersihan duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col: key_cols.append(ton_col)
@@ -330,7 +326,6 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
 
     if 'Kecamatan' in df_master.columns: df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
 
-    # Pembersihan duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col: key_cols.append(ton_col)
@@ -480,7 +475,7 @@ if "grafik" not in st.session_state: st.session_state.grafik = {}
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
+st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**. Fokus data waktu masuk/keluar ditampilkan hanya 2 kolom.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -549,7 +544,7 @@ with st.sidebar:
                 if hasil is None: st.error("Gagal memproses data.")
                 else:
                     st.session_state.hasil = hasil
-                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Master Data siap dengan kolom waktu yang jelas.")
+                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Data waktu masuk/keluar siap.")
                     st.balloons()
 
 # Tampilkan hasil
@@ -578,19 +573,18 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    # --- MASTER DATA DENGAN KOLOM WAKTU JELAS ---
+    # --- MASTER DATA DENGAN FOKUS WAKTU (HANYA 2 KOLOM + DURASI) ---
     st.markdown("---")
     st.header("📋 Master Data (Data Waktu Masuk & Keluar Timbang)")
-    # Pilih kolom penting untuk ditampilkan
-    cols_penting = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL', 'TYPE', 'MERK']
-    if col_netto: cols_penting.append(col_netto)
-    if 'MASUK_ORI' in df_master.columns: cols_penting.append('MASUK_ORI')
-    if 'KELUAR_ORI' in df_master.columns: cols_penting.append('KELUAR_ORI')
-    if 'DURASI_MENIT' in df_master.columns: cols_penting.append('DURASI_MENIT')
+    st.markdown("Hanya menampilkan kolom penting: **NOPIN, Plat, Kecamatan, Tanggal, Masuk, Keluar, Durasi**.")
+    cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
+    if col_netto: cols_waktu.append(col_netto)
+    if 'MASUK_ORI' in df_master.columns: cols_waktu.append('MASUK_ORI')
+    if 'KELUAR_ORI' in df_master.columns: cols_waktu.append('KELUAR_ORI')
+    if 'DURASI_MENIT' in df_master.columns: cols_waktu.append('DURASI_MENIT')
 
-    # Hanya tampilkan kolom yang ada
-    cols_available = [c for c in cols_penting if c in df_master.columns]
-    st.dataframe(df_master[cols_available].head(20), use_container_width=True)
+    cols_ada = [c for c in cols_waktu if c in df_master.columns]
+    st.dataframe(df_master[cols_ada].head(20), use_container_width=True)
     st.caption("Kolom `MASUK_ORI` dan `KELUAR_ORI` adalah data asli dari Excel. `DURASI_MENIT` adalah selisih yang sudah dibersihkan.")
 
     # Ringkasan Kecamatan
@@ -623,7 +617,7 @@ if st.session_state.hasil is not None:
 
     # --- ANALISIS WAKTU (DURASI) ---
     st.markdown("---")
-    st.header("⏱️ Analisis Waktu Pelayanan (Durasi Masuk & Keluar Timbang)")
+    st.header("⏱️ Analisis Waktu Pelayanan (Durasi Masuk & Keluar)")
     if 'DURASI_MENIT' in df_master.columns and df_master['DURASI_MENIT'].notna().sum() > 0:
         valid_waktu = df_master['DURASI_MENIT'].notna().sum()
         col_w1, col_w2, col_w3, col_w4 = st.columns(4)
@@ -632,12 +626,10 @@ if st.session_state.hasil is not None:
         col_w3.metric("Durasi Minimum", f"{df_master['DURASI_MENIT'].min():.1f} menit")
         col_w4.metric("Durasi Maksimum", f"{df_master['DURASI_MENIT'].max():.1f} menit")
 
-        # Histogram
         fig_hist = px.histogram(df_master, x='DURASI_MENIT', nbins=30, title='Distribusi Durasi Pelayanan (menit)', template='plotly_white')
         st.plotly_chart(fig_hist, use_container_width=True)
         st.session_state.grafik['hist_durasi'] = fig_hist
 
-        # Durasi per Kecamatan
         if not df_kec.empty and 'Rata_Durasi_Menit' in df_kec.columns:
             fig_durasi_kec = px.bar(df_kec.dropna(subset=['Rata_Durasi_Menit']), x='Kecamatan', y='Rata_Durasi_Menit',
                                     color='Rata_Durasi_Menit', color_continuous_scale='Blues',
@@ -645,7 +637,6 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_durasi_kec, use_container_width=True)
             st.session_state.grafik['durasi_kec'] = fig_durasi_kec
 
-        # Durasi per Type
         if not df_waktu_jenis.empty:
             fig_durasi_type = px.bar(df_waktu_jenis, x='Jenis Armada', y='Rata2 Waktu Tempuh (menit)',
                                      color='Rata2 Waktu Tempuh (menit)', color_continuous_scale='Teal',
@@ -731,7 +722,10 @@ if st.session_state.hasil is not None:
         if not df_waktu_jenis.empty:
             st.download_button("⏱️ Waktu per Jenis (Excel)", to_excel(df_waktu_jenis), "Waktu_per_Jenis.xlsx")
         if 'DURASI_MENIT' in df_master.columns:
-            st.download_button("⏱️ Data Durasi Mentah (CSV)", df_master[['NOPIN','NO_PLAT','MASUK_ORI','KELUAR_ORI','DURASI_MENIT']].to_csv(index=False).encode('utf-8'), "durasi.csv")
+            # Unduh CSV hanya kolom waktu + durasi
+            cols_csv = ['NOPIN','NO_PLAT','MASUK_ORI','KELUAR_ORI','DURASI_MENIT']
+            cols_csv_ada = [c for c in cols_csv if c in df_master.columns]
+            st.download_button("⏱️ Data Waktu & Durasi (CSV)", df_master[cols_csv_ada].to_csv(index=False).encode('utf-8'), "waktu_durasi.csv")
 
     with st.expander("🔎 Lihat Data Mentah Lengkap (200 baris pertama)"):
         st.dataframe(df_master.head(200))
