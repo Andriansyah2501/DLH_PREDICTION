@@ -193,7 +193,6 @@ def hitung_agregasi_armada(df_master, col_netto):
     df_armada = df_master.groupby(group_cols, dropna=False).agg(
         Total_Trip=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum')
     ).reset_index().sort_values('Total_Trip', ascending=False)
-    # tambahkan rata‑rata durasi jika tersedia
     if 'DURASI_MENIT' in df_master.columns:
         durasi_agg = df_master.dropna(subset=['DURASI_MENIT']).groupby(['NOPIN', 'NO_PLAT'])['DURASI_MENIT'].mean().reset_index()
         durasi_agg.columns = ['NOPIN', 'NO_PLAT', 'Rata_Durasi']
@@ -846,38 +845,56 @@ if st.session_state.hasil is not None:
         df_cluster, ringkasan_cluster = lakukan_clustering(df_armada, n_clusters=n_clusters)
 
         if df_cluster is not None and ringkasan_cluster is not None:
-            # Scatter plot
-            fig_cluster = px.scatter(df_cluster, x='Total_Trip', y='Total_Tonase', color='Cluster',
-                                     symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
-                                     title='Clustering Armada Berdasarkan Trip & Tonase',
-                                     template='plotly_white')
+            # Scatter plot trip vs tonase
+            fig_cluster = px.scatter(
+                df_cluster, x='Total_Trip', y='Total_Tonase', color='Cluster',
+                symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
+                title='Clustering Armada Berdasarkan Trip & Tonase',
+                template='plotly_white'
+            )
             if 'Rata_Durasi' in df_cluster.columns:
-                fig_cluster_dur = px.scatter(df_cluster, x='Total_Trip', y='Rata_Durasi', color='Cluster',
-                                             symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
-                                             title='Clustering Armada Berdasarkan Trip & Durasi',
-                                             template='plotly_white')
+                fig_cluster_dur = px.scatter(
+                    df_cluster, x='Total_Trip', y='Rata_Durasi', color='Cluster',
+                    symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
+                    title='Clustering Armada Berdasarkan Trip & Durasi',
+                    template='plotly_white'
+                )
                 st.plotly_chart(fig_cluster_dur, use_container_width=True)
 
             st.plotly_chart(fig_cluster, use_container_width=True)
 
-            # Tabel ringkasan
+            # Tabel ringkasan per cluster (PERBAIKAN)
             st.subheader("📊 Ringkasan per Cluster")
             ringkasan_disp = ringkasan_cluster.copy()
-            ringkasan_disp.insert(0, 'Cluster', ringkasan_disp['Cluster'].astype(str))
-            # hilangkan duplikasi kolom
-            if 'Cluster' in ringkasan_disp.columns:
-                ringkasan_disp = ringkasan_disp.rename(columns={'Cluster': 'Cluster'})
-            st.dataframe(ringkasan_disp.style.format({
-                'Rata_Trip': '{:.1f}',
-                'Rata_Tonase': '{:,.0f}',
-                'Rata_Durasi': '{:.1f}'
-            }), use_container_width=True, hide_index=True)
+            # Pastikan Cluster jadi kolom biasa, bukan index
+            if 'Cluster' not in ringkasan_disp.columns:
+                ringkasan_disp = ringkasan_disp.reset_index()
+            # Atur urutan kolom agar Cluster di depan
+            cols_order = ['Cluster'] + [c for c in ringkasan_disp.columns if c != 'Cluster']
+            ringkasan_disp = ringkasan_disp[cols_order]
 
-            # Anggota per cluster (tabel expander)
+            st.dataframe(
+                ringkasan_disp.style.format({
+                    'Jumlah_Armada': '{:.0f}',
+                    'Rata_Trip': '{:.1f}',
+                    'Rata_Tonase': '{:,.0f}',
+                    'Rata_Durasi': '{:.1f}'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # Anggota per cluster (expander)
             with st.expander("📋 Lihat Anggota per Cluster"):
                 cluster_list = sorted(df_cluster['Cluster'].unique())
                 for c in cluster_list:
-                    anggota = df_cluster[df_cluster['Cluster'] == c][['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']]
+                    anggota = df_cluster[df_cluster['Cluster'] == c][
+                        ['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase']
+                    ]
+                    if 'Rata_Durasi' in df_cluster.columns:
+                        anggota = df_cluster[df_cluster['Cluster'] == c][
+                            ['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']
+                        ]
                     st.write(f"**Cluster {c}** ({len(anggota)} armada)")
                     st.dataframe(anggota, use_container_width=True)
         else:
