@@ -3,7 +3,14 @@ import pandas as pd
 import numpy as np
 import re
 import plotly.express as px
+import plotly.io as pio
 from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+import tempfile
+import os
 
 # -------------------------- Fungsi Bantu --------------------------
 def normalisasi_nopin(val):
@@ -36,7 +43,7 @@ def proses_list_armada(sheets_dict, armada_sheet, config):
     ref_df = None
     ref_dict = {}
 
-    if 'col_nopin_arm' not in config:  # Otomatis
+    if 'col_nopin_arm' not in config:
         header_arm = 0
         for idx, row in df_arm_raw.iterrows():
             row_str = " ".join(row.astype(str).dropna().str.upper().values)
@@ -81,7 +88,7 @@ def proses_list_armada(sheets_dict, armada_sheet, config):
 def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
     df_raw = sheets_dict[sheet].copy()
 
-    if 'col_nopin_day' not in config:   # Otomatis
+    if 'col_nopin_day' not in config:
         header_harian = None
         for idx, row in df_raw.iterrows():
             row_str = " ".join(row.astype(str).dropna().str.upper().values)
@@ -108,7 +115,6 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     df_hari = df_hari.rename(columns={col_nopin_day: 'NOPIN', col_plat_day: 'NO_PLAT'})
 
-    # Pembersihan
     df_hari = df_hari.dropna(subset=['NOPIN'])
     df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
     df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
@@ -118,7 +124,6 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     no_plat_asli = df_hari['NO_PLAT'].copy() if 'NO_PLAT' in df_hari.columns else pd.Series('', index=df_hari.index)
 
-    # Sinkronisasi dengan master
     if ref_df is not None and not ref_df.empty:
         for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
             if col in df_hari.columns:
@@ -141,12 +146,11 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
         df_hari['Kecamatan'] = df_hari['Kecamatan'].fillna('Tidak Diketahui').replace('', 'Tidak Diketahui')
 
     try:
-        tgl = f"2026-06-{int(sheet):02d}"
+        tgl = f"2026-06-{int(sheet):02d}"  # fallback, nanti akan diganti oleh TANGGAL asli jika ada
     except ValueError:
         tgl = sheet
     df_hari['TANGGAL'] = tgl
 
-    # Hapus duplikasi kolom
     df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
     return df_hari
 
@@ -201,7 +205,6 @@ def hitung_per_kecamatan(df_master, col_netto):
     return pd.DataFrame()
 
 def hitung_per_type(df_master, col_netto):
-    """Agregasi per TYPE armada."""
     if 'TYPE' in df_master.columns and col_netto:
         df_type = df_master.groupby('TYPE', dropna=False).agg(
             Total_Ritase=('NOPIN', 'count'),
@@ -244,14 +247,13 @@ def proses_data(sheets_dict, config):
 
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
-    # Bersihkan duplikat
+    # Hapus duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
         key_cols.append(ton_col)
     df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
 
-    # Konversi numerik tonase
     if ton_col:
         df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
     col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
@@ -278,6 +280,144 @@ def proses_data(sheets_dict, config):
         'cleaned_count': len(cleaned)
     }
 
+# -------------------------- Generate Ringkasan Eksekutif (Poin 7.0) --------------------------
+def buat_ringkasan_eksekutif(data):
+    df = data['df_master']
+    col_netto = data['col_netto']
+    df_kec = data['df_kec']
+    df_armada = data['df_armada']
+    teraktif = data['teraktif']
+    tidak_efisien = data['tidak_efisien']
+
+    # Ambil periode dari data
+    if 'TANGGAL' in df.columns:
+        df['TANGGAL_DT'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
+        valid_dates = df['TANGGAL_DT'].dropna()
+        if not valid_dates.empty:
+            bulan_tahun = valid_dates.dt.strftime('%B %Y').iloc[0]  # contoh: "June 2026"
+            # Ubah ke bahasa Indonesia jika perlu, atau biarkan saja (bisa ditambahkan mapping)
+        else:
+            bulan_tahun = "Juni 2026"
+    else:
+        bulan_tahun = "Juni 2026"
+
+    total_ritase = len(df)
+    total_armada = df['NOPIN'].nunique()
+    total_tonase_ton = round(df[col_netto].sum() / 1000, 2) if col_netto else 0
+
+    if not df_kec.empty:
+        kec_tertinggi = df_kec.iloc[0]['Kecamatan']
+        tonase_tertinggi = round(df_kec.iloc[0]['Total_Tonase'] / 1000, 2)
+    else:
+        kec_tertinggi = "N/A"
+        tonase_tertinggi = 0
+
+    # Cari 5 armada dengan ritase terendah (untuk rekomendasi pemeliharaan)
+    if not df_armada.empty:
+        terbawah = df_armada.sort_values('Total_Trip', ascending=True).head(5)
+        list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()])
+    else:
+        list_terbawah = "tidak tersedia"
+
+    teks = f"""
+LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
+=========================================================================
+1. RINGKASAN OPERASIONAL:
+   - Sepanjang bulan {bulan_tahun}, tercatat sebanyak {total_armada} unit armada sampah
+     aktif beroperasi di bawah naungan DLH Kota Batam.
+   - Total frekuensi perjalanan (ritase) pengangkutan menuju TPA adalah {total_ritase} trip.
+   - Total volume sampah yang berhasil dipindahkan dan ditimbang
+     mencapai {total_tonase_ton:,.0f} Ton.
+   - Wilayah dengan beban pengangkutan tertinggi berada di Kecamatan {kec_tertinggi}
+     dengan kontribusi muatan sebesar {tonase_tertinggi:,.0f} Ton.
+   - Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','-')}) dengan {int(teraktif.get('Total_Trip',0))} trip.
+   - Armada paling tidak efisien: {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','-')}) dengan {int(tidak_efisien.get('Total_Trip',0))} trip.
+
+2. REKOMENDASI STRATEGIS MANAJEMEN:
+   - [Optimasi Rute & Armada] Melakukan redistribusi atau penambahan unit armada
+     pada wilayah kritis (Kecamatan {kec_tertinggi}) guna mencegah kelambatan
+     pengangkutan sampah di area pemukiman padat.
+   - [Jadwal Shift Kerja] Mengatur ulang jam operasional keberangkatan armada
+     untuk memecah penumpukan truk pada jam-jam puncak kepadatan di jembatan timbang.
+   - [Pemeliharaan Rutin] Memberikan perhatian maintenance berkala pada armada
+     dengan ritase terendah, antara lain: {list_terbawah}, untuk menganalisis
+     apakah unit tersebut mengalami kendala mekanis atau kekurangan kru lapangan.
+=========================================================================
+    """
+    return teks
+
+# -------------------------- Generate PDF Report --------------------------
+def generate_pdf_report(data, grafik_dict, ringkasan_teks):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor("#1e3c72"), spaceAfter=12)
+    heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor("#1e3c72"), spaceBefore=12, spaceAfter=6)
+    normal_style = styles['Normal']
+
+    # Judul
+    story.append(Paragraph("Laporan Analisis Armada DLH Kota Batam", title_style))
+    story.append(Spacer(1, 12))
+
+    # Ringkasan Eksekutif
+    story.append(Paragraph("Ringkasan Eksekutif", heading_style))
+    for baris in ringkasan_teks.split('\n'):
+        if baris.strip():
+            story.append(Paragraph(baris, normal_style))
+    story.append(Spacer(1, 12))
+
+    # Tabel per Kecamatan (5 teratas)
+    df_kec = data['df_kec']
+    if not df_kec.empty:
+        story.append(Paragraph("5 Kecamatan dengan Aktivitas Tertinggi", heading_style))
+        table_data = [['Kecamatan', 'Ritase', 'Tonase (Kg)', 'Armada']]
+        for _, row in df_kec.head(5).iterrows():
+            table_data.append([row['Kecamatan'], str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}", str(row['Jumlah_Armada'])])
+        t = Table(table_data, colWidths=[150, 80, 100, 70])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1e3c72")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 12))
+
+    # Tabel per Type
+    df_type = data['df_type']
+    if not df_type.empty:
+        story.append(Paragraph("Ringkasan per Jenis Armada", heading_style))
+        table_data2 = [['Type', 'Ritase', 'Tonase (Kg)', 'Armada', 'Rata Durasi']]
+        for _, row in df_type.iterrows():
+            table_data2.append([row['TYPE'], str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}", str(row['Jumlah_Armada']), f"{row.get('Rata_Durasi_Menit', '-'):.1f}" if 'Rata_Durasi_Menit' in row else '-'])
+        t2 = Table(table_data2, colWidths=[100, 70, 100, 70, 80])
+        t2.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1e3c72")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+        ]))
+        story.append(t2)
+        story.append(Spacer(1, 12))
+
+    # Grafik
+    story.append(Paragraph("Visualisasi Data", heading_style))
+    for key, fig in grafik_dict.items():
+        if fig is not None:
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                pio.write_image(fig, tmp.name, format='png', width=500, height=300)
+                story.append(Image(tmp.name, width=450, height=250))
+                story.append(Spacer(1, 12))
+                os.unlink(tmp.name)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # -------------------------- SESSION STATE --------------------------
 if "hasil" not in st.session_state:
     st.session_state.hasil = None
@@ -285,8 +425,10 @@ if "sheets" not in st.session_state:
     st.session_state.sheets = None
 if "config" not in st.session_state:
     st.session_state.config = None
+if "grafik" not in st.session_state:
+    st.session_state.grafik = {}
 
-# -------------------------- ANTARMUKA --------------------------
+# -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
 st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Data duplikat akan dibersihkan otomatis.")
@@ -429,7 +571,7 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
-    # Ringkasan per TYPE (BARU)
+    # Analisis per TYPE
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
         col1, col2 = st.columns([2, 1])
@@ -443,8 +585,6 @@ if st.session_state.hasil is not None:
                               color_continuous_scale='Blues', title='Total Tonase per Type')
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
-    else:
-        st.info("Data TYPE tidak tersedia.")
 
     # Tren Harian
     if not df_tren.empty:
@@ -471,26 +611,35 @@ if st.session_state.hasil is not None:
         if 'DURASI_MENIT' in df_master.columns:
             fig_hist = px.histogram(df_master, x='DURASI_MENIT', nbins=30, title='Distribusi Durasi Pelayanan (menit)')
             st.plotly_chart(fig_hist, use_container_width=True)
+            st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Laporan Ringkasan
-    st.subheader("📝 Laporan Ringkasan Otomatis")
-    kec_tertinggi = df_kec.iloc[0]['Kecamatan'] if not df_kec.empty else '-'
-    type_tertinggi = df_type.iloc[0]['TYPE'] if not df_type.empty else '-'
-    total_tonase_global = df_master[col_netto].sum()/1000 if col_netto else 0
-    laporan = f"""
-**Ringkasan Operasional (Juni 2026):**
-- Total trip: {len(df_master)}
-- Armada aktif: {df_master['NOPIN'].nunique()} unit
-- Total volume sampah: {total_tonase_global:,.1f} Ton
-- Kecamatan tersibuk: **{kec_tertinggi}**
-- Jenis armada dominan: **{type_tertinggi}**
-- Armada teraktif: {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','')}) – {int(teraktif.get('Total_Trip',0))} trip
-- Armada tidak efisien: {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','')}) – {int(tidak_efisien.get('Total_Trip',0))} trip
-"""
-    st.markdown(laporan)
-    st.download_button("📄 Unduh Ringkasan (TXT)", laporan.encode('utf-8'), "ringkasan.txt")
+    # Simpan grafik untuk PDF
+    st.session_state.grafik['tren'] = fig_tren
+    st.session_state.grafik['kec_ton'] = fig_ton
+    st.session_state.grafik['type_bar'] = fig_type_bar
+    st.session_state.grafik['type_pie'] = fig_type_pie
+    if 'hist_durasi' in locals():
+        st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Unduhan
+    # Ringkasan Eksekutif (Poin 7.0)
+    st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
+    ringkasan_teks = buat_ringkasan_eksekutif(data)
+    st.markdown(f"```\n{ringkasan_teks}\n```")
+    st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
+
+    # Tombol PDF
+    st.subheader("📑 Laporan PDF Lengkap dengan Rekomendasi")
+    if st.button("📥 Buat Laporan PDF"):
+        with st.spinner("Membuat PDF..."):
+            pdf_buffer = generate_pdf_report(data, st.session_state.grafik, ringkasan_teks)
+            st.download_button(
+                label="⬇️ Unduh Laporan PDF",
+                data=pdf_buffer,
+                file_name="Laporan_DLH_Armada.pdf",
+                mime="application/pdf"
+            )
+
+    # Unduhan Data
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
