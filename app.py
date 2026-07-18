@@ -376,7 +376,7 @@ def remove_outliers_iqr(df, column):
 
 def lakukan_clustering_ml(df_armada, n_clusters=3):
     if df_armada.empty or len(df_armada) < n_clusters:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     fitur_cols = ['Total_Trip', 'Total_Tonase']
     if 'Rata_Durasi' in df_armada.columns and df_armada['Rata_Durasi'].notna().sum() > n_clusters:
@@ -386,13 +386,13 @@ def lakukan_clustering_ml(df_armada, n_clusters=3):
         df_fitur = df_armada.copy()
 
     if df_fitur.empty or len(df_fitur) < n_clusters:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     for col in fitur_cols:
         df_fitur = remove_outliers_iqr(df_fitur, col)
 
     if len(df_fitur) < n_clusters:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     X = df_fitur[fitur_cols].values
     scaler = StandardScaler()
@@ -437,20 +437,16 @@ def plot_elbow(X_scaled, max_k=8):
     fig_sil.update_layout(xaxis_title='Jumlah Cluster', yaxis_title='Silhouette Score')
     return fig_elbow, fig_sil
 
-# -------------------------- Modelling (TAMBAHAN BARU) --------------------------
+# -------------------------- Modelling --------------------------
 def latih_model_klasifikasi(df_fitur, fitur_cols, model_type='Random Forest'):
-    """Latih model klasifikasi berdasarkan label cluster."""
     X = df_fitur[fitur_cols].values
     y = df_fitur['Cluster'].values
 
-    # Scaling
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Split
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42, stratify=y)
 
-    # Pilih model
     if model_type == 'KNN':
         model = KNeighborsClassifier(n_neighbors=3)
     elif model_type == 'Decision Tree':
@@ -471,7 +467,6 @@ def latih_model_klasifikasi(df_fitur, fitur_cols, model_type='Random Forest'):
     cm = confusion_matrix(y_test, y_pred)
     cr = classification_report(y_test, y_pred, output_dict=True)
 
-    # Simpan model
     joblib.dump(model, 'model_cluster.pkl')
     joblib.dump(scaler, 'scaler.pkl')
 
@@ -541,13 +536,13 @@ LAPORAN KESIMPULAN EKSEKUTIF - REKAP TONASE DLH BATAM ({bulan_tahun})
     """
     return teks
 
-# -------------------------- Generate PDF Report --------------------------
+# -------------------------- Generate PDF Report (DIPERBAIKI) --------------------------
 def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     styles = getSampleStyleSheet()
     story = []
-    temp_files = []  # Perbaikan: deklarasi temp_files
+    temp_files = []
 
     PRIMARY = colors.HexColor("#1E3A8A")
     SECONDARY = colors.HexColor("#0D9488")
@@ -578,15 +573,19 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     story.append(Paragraph("LAPORAN AKHIR KOMPREHENSIF HASIL EVALUASI DATA", title_style))
     story.append(Paragraph("Konsolidasi Log Jembatan Timbang Dinas Lingkungan Hidup Kota Batam • Periode Juni 2026", subtitle_style))
 
-    story.append(Paragraph("Poin 1.0: Penggabungan Data Harian (Konsolidasi Juni 2026)", h1_style))
-    story.append(Paragraph(f"✔ Status Penggabungan  : SUKSES GABUNG ({data['cleaned_count']} Sheet Harian)", body_style))
-    story.append(Paragraph(f"✔ Periode Data         : Juni 2026", body_style))
-    story.append(Paragraph(f"✔ Total Baris Aktivitas: {df_master.shape[0]} baris log armada", body_style))
-    story.append(Paragraph(f"✔ Total Kolom Terdata  : {df_master.shape[1]} kolom", body_style))
+    # ---------- POIN 1.0 & 2.0 ----------
+    story.append(Paragraph("Poin 1.0 & 2.0: Konsolidasi Master Data & Sebaran Wilayah Kerja", h1_style))
+    narasi_awal = (
+        f"Proses <i>data cleaning</i> dan rekonsiliasi vertikal terhadap 30 sheet harian telah diselesaikan dengan sukses "
+        f"menggunakan validasi <i>List Armada</i> sebagai acuan utama. Berdasarkan audit log, ditemukan total "
+        f"<b>{total_armada}</b> unit armada yang beroperasi aktif sepanjang bulan Juni 2026, dengan total frekuensi muatan "
+        f"sebanyak <b>{total_ritase:,} kali trip</b> dan akumulasi volume bersih seberat <b>{total_tonase_ton:,.2f} Ton</b> sampah."
+    )
+    story.append(Paragraph(narasi_awal, body_style))
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("Poin 2.0: Kategorisasi Data Berdasarkan Wilayah Kecamatan", h1_style))
     if not df_kec.empty:
+        story.append(Paragraph("Tabel 1. Ringkasan Aktivitas per Wilayah Kecamatan", h1_style))
         table_data_kec = [["Kecamatan", "Armada Aktif", "Total Ritase (Trip)", "Total Tonase (Kg)"]]
         for _, row in df_kec.iterrows():
             table_data_kec.append([str(row['Kecamatan']), str(row['Jumlah_Armada']), str(row['Total_Ritase']), f"{row['Total_Tonase']:,.0f}"])
@@ -600,6 +599,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t_kec)
         story.append(Spacer(1, 10))
 
+    # ---------- POIN 3.0 ----------
     story.append(Paragraph("Poin 3.0: Analisis Kuantitatif Trip & Akumulasi Muatan per Armada (Top 5 Unit)", h1_style))
     if not df_armada.empty:
         table_data_arm = [["No. Pintu", "No. Plat", "Wilayah Kecamatan", "Tipe", "Total Trip", "Total Netto (Ton)"]]
@@ -616,13 +616,14 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t_arm)
         story.append(Spacer(1, 10))
 
+    # ---------- POIN 4.0 & 6.0 ----------
     story.append(Paragraph("Poin 4.0 & 6.0: Tren Produktivitas Harian & Dashboard Laporan Visual", h1_style))
     if 'tren' in grafik_dict and grafik_dict['tren'] is not None:
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
             grafik_dict['tren'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
             pio.write_image(grafik_dict['tren'], tmp.name, format='png', width=500, height=200, scale=2)
             temp_files.append(tmp.name)
-            story.append(Image(tmp.name, width=450, height=180))
+            story.append(Image(tmp.name, width=400, height=160))
             if hari_puncak is not None:
                 tgl_puncak_pdf = pd.Timestamp(hari_puncak['TANGGAL']).strftime('%d %B %Y') if pd.notna(hari_puncak.get('TANGGAL')) else "-"
                 narrative_tren = (
@@ -638,7 +639,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
             grafik_dict['kec_ton'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
             pio.write_image(grafik_dict['kec_ton'], tmp.name, format='png', width=500, height=200, scale=2)
             temp_files.append(tmp.name)
-            story.append(Image(tmp.name, width=450, height=180))
+            story.append(Image(tmp.name, width=400, height=160))
             narrative_kec = (
                 f"<b>Interpretasi Distribusi Wilayah:</b> Diagram batang di atas secara visual menegaskan bahwa beban pengangkutan sampah "
                 f"tidak terdistribusi secara merata di seluruh Kota Batam. Wilayah Kecamatan <b>{kec_tertinggi}</b> mendominasi volume buangan secara signifikan. "
@@ -647,6 +648,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
             story.append(Paragraph(narrative_kec, analysis_style))
         story.append(Spacer(1, 10))
 
+    # ---------- POIN 5.0 ----------
     story.append(Paragraph("Poin 5.0: Analisis Efisiensi Waktu Operasional (Service Time)", h1_style))
     if 'df_waktu_jenis' in data and not data['df_waktu_jenis'].empty:
         table_data_wkt = [["Jenis Armada", "Rata-rata Waktu Pelayanan (Menit)"]]
@@ -662,6 +664,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(Paragraph("<i>Kolom analisis waktu disesuaikan menggunakan parameter pendekatan kurva operasional jembatan timbang standar dinas.</i>", body_style))
     story.append(Spacer(1, 10))
 
+    # ---------- POIN 7.0 ----------
     story.append(Paragraph("Poin 7.0: Kesimpulan Eksekutif & Rekomendasi Strategis Manajemen", h1_style))
     rekomendasi_teks = (
         f"1. <b>Manajemen Prioritas Logistik:</b> Wilayah Kecamatan <b>{kec_tertinggi}</b> harus dijadikan fokus utama dalam skema "
@@ -1132,7 +1135,6 @@ if st.session_state.hasil is not None:
                     cr_df = pd.DataFrame(cr).transpose()
                     st.dataframe(cr_df.style.format("{:.2f}"))
 
-                    # Tombol unduh model
                     with open('model_cluster.pkl', 'rb') as f:
                         st.download_button("📥 Unduh Model (PKL)", f, file_name='model_cluster.pkl')
                     with open('scaler.pkl', 'rb') as f:
