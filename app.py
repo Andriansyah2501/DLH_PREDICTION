@@ -644,7 +644,7 @@ if st.session_state.hasil is not None:
     df_master = df_master.sort_values(by=sort_cols).reset_index(drop=True)
 
     # ---------- POIN 1.0 ----------
-    st.header("📋 Poin 1.0: Penggabungan Data Harian (Konsolidasi)")
+    st.header("📋 Penggabungan Data Harian (Konsolidasi)")
     col_prioritas = ['TANGGAL', 'NOPIN', 'NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']
     kolom_sisa = [col for col in df_master.columns if col not in col_prioritas]
     df_jawaban_1 = df_master[col_prioritas + kolom_sisa]
@@ -673,18 +673,6 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    # ---------- MASTER DATA (1000 BARIS PERTAMA) ----------
-    st.subheader("📋 Master Data (1000 Baris Pertama, dengan No Urut)")
-    cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
-    if col_netto: cols_waktu.append(col_netto)
-    if 'MASUK_ORI' in df_master.columns: cols_waktu.append('MASUK_ORI')
-    if 'KELUAR_ORI' in df_master.columns: cols_waktu.append('KELUAR_ORI')
-    if 'DURASI_MENIT' in df_master.columns: cols_waktu.append('DURASI_MENIT')
-
-    df_show = df_master.head(1000).copy()
-    df_show.insert(0, 'No', range(1, len(df_show)+1))
-    cols_ada = ['No'] + [c for c in cols_waktu if c in df_show.columns]
-    st.dataframe(df_show[cols_ada], use_container_width=True, hide_index=True)
 
     # ---------- RINGKASAN KECAMATAN ----------
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
