@@ -428,7 +428,7 @@ if uploaded_file is not None:
         # --------------------------------------------------------
         st.markdown("---")
         st.header("📝 Laporan Eksekutif Otomatis")
-        # Bangun teks dinamis
+        # Bangun teks dinamis (hindari concatenation langsung dengan Timestamp)
         teraktif_nopin = teraktif['NOPIN'] if teraktif is not None else "N/A"
         teraktif_plat = teraktif['NO_PLAT'] if teraktif is not None else ""
         teraktif_trip = int(teraktif['Total_Trip']) if teraktif is not None else 0
