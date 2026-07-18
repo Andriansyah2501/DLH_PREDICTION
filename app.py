@@ -279,7 +279,7 @@ def proses_data(sheets_dict, config):
         'cleaned_count': len(cleaned)
     }
 
-# -------------------------- Generate Ringkasan Eksekutif (Poin 7.0) --------------------------
+# -------------------------- Ringkasan Eksekutif (Poin 7.0) --------------------------
 def buat_ringkasan_eksekutif(data):
     df = data['df_master']
     col_netto = data['col_netto']
@@ -288,6 +288,7 @@ def buat_ringkasan_eksekutif(data):
     teraktif = data['teraktif']
     tidak_efisien = data['tidak_efisien']
 
+    # Ambil periode dari data
     if 'TANGGAL' in df.columns:
         df['TANGGAL_DT'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
         valid_dates = df['TANGGAL_DT'].dropna()
@@ -309,6 +310,7 @@ def buat_ringkasan_eksekutif(data):
         kec_tertinggi = "N/A"
         tonase_tertinggi = 0
 
+    # 5 armada dengan trip terendah untuk rekomendasi pemeliharaan
     if not df_armada.empty:
         terbawah = df_armada.sort_values('Total_Trip', ascending=True).head(5)
         list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()])
@@ -396,16 +398,26 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t2)
         story.append(Spacer(1, 12))
 
+    # Grafik
+    temp_files = []
     story.append(Paragraph("Visualisasi Data", heading_style))
     for key, fig in grafik_dict.items():
         if fig is not None:
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 pio.write_image(fig, tmp.name, format='png', width=500, height=300)
+                temp_files.append(tmp.name)
                 story.append(Image(tmp.name, width=450, height=250))
                 story.append(Spacer(1, 12))
-                os.unlink(tmp.name)
 
     doc.build(story)
+
+    # Hapus file sementara setelah PDF selesai
+    for f in temp_files:
+        try:
+            os.unlink(f)
+        except Exception:
+            pass
+
     buffer.seek(0)
     return buffer
 
@@ -598,6 +610,7 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_hist, use_container_width=True)
             st.session_state.grafik['hist_durasi'] = fig_hist
 
+    # Simpan grafik untuk PDF
     st.session_state.grafik['tren'] = fig_tren
     st.session_state.grafik['kec_ton'] = fig_ton
     st.session_state.grafik['type_bar'] = fig_type_bar
@@ -605,11 +618,13 @@ if st.session_state.hasil is not None:
     if 'hist_durasi' in locals():
         st.session_state.grafik['hist_durasi'] = fig_hist
 
+    # Ringkasan Eksekutif
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
     ringkasan_teks = buat_ringkasan_eksekutif(data)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
+    # PDF
     st.subheader("📑 Laporan PDF Lengkap dengan Rekomendasi")
     if st.button("📥 Buat Laporan PDF"):
         with st.spinner("Membuat PDF..."):
@@ -621,6 +636,7 @@ if st.session_state.hasil is not None:
                 mime="application/pdf"
             )
 
+    # Unduhan
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
