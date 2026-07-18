@@ -1,11 +1,19 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 import plotly.express as px
 from io import BytesIO
 
 # -------------------------- Fungsi Bantu --------------------------
+def normalisasi_nopin(nopin_str):
+    """Hilangkan semua karakter selain huruf dan angka, lalu uppercase."""
+    if pd.isna(nopin_str):
+        return ''
+    return re.sub(r'[^A-Z0-9]', '', str(nopin_str).upper())
+
 def cari_kolom(daftar_kolom, kata_kunci):
+    """Cari kolom yang mengandung salah satu kata kunci (case‑insensitive)."""
     for col in daftar_kolom:
         if any(kw in str(col).upper() for kw in kata_kunci):
             return col
@@ -13,11 +21,12 @@ def cari_kolom(daftar_kolom, kata_kunci):
 
 @st.cache_data(show_spinner="Membaca file Excel...")
 def baca_semua_sheet(uploaded_file):
+    """Baca semua sheet sebagai DataFrame mentah (header=None) agar tidak ada header yang terlewat."""
     xls = pd.ExcelFile(uploaded_file, engine='openpyxl' if uploaded_file.name.endswith('.xlsx') else None)
     sheets = {}
     for name in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name=name)
+            df = pd.read_excel(xls, sheet_name=name, header=None)
             if not df.empty:
                 sheets[name] = df
         except:
@@ -26,67 +35,83 @@ def baca_semua_sheet(uploaded_file):
 
 def proses_data(sheets_dict, config):
     """
-    Memproses data sesuai konfigurasi (otomatis atau manual).
-    config: dict berisi 'armada_sheet', 'daily_sheets', 'col_nopin_arm', 'col_plat_arm',
-            'col_kec_arm', 'col_merk_arm', 'col_type_arm', serta untuk sheet harian:
-            'col_nopin_day', 'col_plat_day'.
+    Memproses data dengan konfigurasi yang diberikan (otomatis/manual).
+    Seluruh sheet sudah dalam bentuk mentah (header=None), sehingga kita bebas mencari header sendiri.
     """
     armada_sheet = config.get('armada_sheet')
     daily_sheets = config.get('daily_sheets', [])
 
     ref_df = None
     ref_dict = {}
+
+    # =================== 1. PROSES LIST ARMADA ===================
     if armada_sheet and armada_sheet in sheets_dict:
         df_arm_raw = sheets_dict[armada_sheet].copy()
-        header_arm = 0
-        # Cari header otomatis jika belum diatur manual
-        if 'col_nopin_arm' not in config:
+
+        # --- Deteksi header armada ---
+        if 'col_nopin_arm' not in config:   # Mode otomatis
+            header_arm = 0
             for idx, row in df_arm_raw.iterrows():
                 row_str = " ".join(row.astype(str).dropna().str.upper().values)
-                if 'NOPIN' in row_str or 'NO.PLAT' in row_str:
+                if 'NOPIN' in row_str or 'NO.PLAT' in row_str or 'PINTU' in row_str:
                     header_arm = idx
                     break
+            # Potong data setelah header
             if header_arm > 0:
-                df_ref = df_arm_raw.iloc[header_arm:].reset_index(drop=True)
-                df_ref.columns = df_arm_raw.iloc[header_arm].astype(str).str.strip().str.upper()
+                df_ref = df_arm_raw.iloc[header_arm+1:].reset_index(drop=True)
+                # Baris header dijadikan nama kolom
+                header_row = df_arm_raw.iloc[header_arm].astype(str).str.strip().str.upper()
+                df_ref.columns = [str(c).strip().upper() for c in header_row]
             else:
-                df_ref = df_arm_raw.copy()
-                df_ref.columns = [str(c).strip().upper() for c in df_ref.columns]
+                # Gunakan baris pertama sebagai header (fallback)
+                df_ref = df_arm_raw.iloc[1:].reset_index(drop=True) if len(df_arm_raw) > 1 else df_arm_raw
+                if len(df_arm_raw) > 0:
+                    header_row = df_arm_raw.iloc[0].astype(str).str.strip().str.upper()
+                    df_ref.columns = [str(c).strip().upper() for c in header_row]
+            # Cari kolom penting secara otomatis
             col_nopin_arm = cari_kolom(df_ref.columns, ['NOPIN', 'PINTU'])
             col_plat_arm = cari_kolom(df_ref.columns, ['PLAT', 'NOPOL'])
+            col_kec = cari_kolom(df_ref.columns, ['KECAMATAN', 'LOKASI', 'KEC'])
+            col_merk = cari_kolom(df_ref.columns, ['MERK', 'MEREK'])
+            col_type = cari_kolom(df_ref.columns, ['TYPE', 'TIPE'])
         else:
-            # Mode manual: user sudah memilih kolom
+            # Mode manual: kolom sudah dipilih user
             df_ref = df_arm_raw.copy()
             col_nopin_arm = config['col_nopin_arm']
             col_plat_arm = config['col_plat_arm']
+            col_kec = config.get('col_kec_arm')
+            col_merk = config.get('col_merk_arm')
+            col_type = config.get('col_type_arm')
 
+        # Jika kolom NOPIN dan Plat ditemukan
         if col_nopin_arm and col_plat_arm:
-            df_ref['NOPIN'] = df_ref[col_nopin_arm].astype(str).str.strip().str.upper()
+            # Normalisasi NOPIN
+            df_ref['NOPIN_RAW'] = df_ref[col_nopin_arm].astype(str).str.strip().str.upper()
+            df_ref['NOPIN_NORM'] = df_ref['NOPIN_RAW'].apply(normalisasi_nopin)
             df_ref['NO.PLAT'] = df_ref[col_plat_arm].astype(str).str.strip().str.upper()
-            # Kolom opsional
-            col_kec = config.get('col_kec_arm') or cari_kolom(df_ref.columns, ['KECAMATAN', 'LOKASI', 'KEC'])
-            col_merk = config.get('col_merk_arm') or cari_kolom(df_ref.columns, ['MERK', 'MEREK'])
-            col_type = config.get('col_type_arm') or cari_kolom(df_ref.columns, ['TYPE', 'TIPE'])
+            # Buat dictionary dengan key NOPIN_NORM
             for _, row in df_ref.iterrows():
-                nopin = row['NOPIN']
-                ref_dict[nopin] = {'NO.PLAT': row['NO.PLAT']}
-                if col_kec: ref_dict[nopin]['Kecamatan'] = str(row[col_kec]).strip()
-                if col_merk: ref_dict[nopin]['MERK'] = str(row[col_merk]).strip()
-                if col_type: ref_dict[nopin]['TYPE'] = str(row[col_type]).strip()
-            ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN'})
+                key = row['NOPIN_NORM']
+                ref_dict[key] = {'NO.PLAT': row['NO.PLAT']}
+                if col_kec: ref_dict[key]['Kecamatan'] = str(row[col_kec]).strip() if pd.notna(row[col_kec]) else ''
+                if col_merk: ref_dict[key]['MERK'] = str(row[col_merk]).strip() if pd.notna(row[col_merk]) else ''
+                if col_type: ref_dict[key]['TYPE'] = str(row[col_type]).strip() if pd.notna(row[col_type]) else ''
+            # DataFrame referensi untuk merge (menggunakan NOPIN_NORM sebagai kunci)
+            ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN_NORM'})
 
-    # Proses sheet harian
+    # =================== 2. PROSES SHEET HARIAN ===================
     cleaned = {}
     skipped = []
     for sheet in daily_sheets:
         if sheet not in sheets_dict:
             skipped.append(sheet)
             continue
+
         df_raw = sheets_dict[sheet].copy()
 
-        # Header harian
-        header_harian = None
-        if 'col_nopin_day' not in config:  # mode otomatis
+        # --- Deteksi header harian ---
+        if 'col_nopin_day' not in config:   # Mode otomatis
+            header_harian = None
             for idx, row in df_raw.iterrows():
                 row_str = " ".join(row.astype(str).dropna().str.upper().values)
                 if 'PINTU' in row_str or 'PLAT MOBIL' in row_str or 'NOPIN' in row_str:
@@ -96,6 +121,7 @@ def proses_data(sheets_dict, config):
                 skipped.append(sheet)
                 continue
             try:
+                # Data setelah header
                 df_hari = df_raw.iloc[header_harian+1:].reset_index(drop=True)
                 header_row = df_raw.iloc[header_harian].astype(str).str.strip().str.upper()
                 df_hari.columns = [str(c).strip().upper() for c in header_row]
@@ -105,7 +131,7 @@ def proses_data(sheets_dict, config):
             col_nopin_day = cari_kolom(df_hari.columns, ['NOPIN', 'PINTU'])
             col_plat_day = cari_kolom(df_hari.columns, ['PLAT', 'NOPOL'])
         else:
-            # Mode manual: user sudah pilih kolom
+            # Mode manual
             df_hari = df_raw.copy()
             col_nopin_day = config['col_nopin_day']
             col_plat_day = config['col_plat_day']
@@ -113,61 +139,75 @@ def proses_data(sheets_dict, config):
         if not col_nopin_day or not col_plat_day:
             skipped.append(sheet)
             continue
+
         df_hari = df_hari.rename(columns={col_nopin_day: 'NOPIN', col_plat_day: 'NO_PLAT'})
 
-        # Pembersihan
+        # --- Pembersihan NOPIN ---
         df_hari = df_hari.dropna(subset=['NOPIN'])
         df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
+        # Hapus baris yang merupakan summary
         df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
         df_hari = df_hari[df_hari['NOPIN'] != '']
-        df_hari['NOPIN'] = df_hari['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+        # Normalisasi untuk pencocokan
+        df_hari['NOPIN_NORM'] = df_hari['NOPIN'].apply(normalisasi_nopin)
+        # Hapus NOPIN yang setelah normalisasi kosong
+        df_hari = df_hari[df_hari['NOPIN_NORM'] != '']
 
-        df_hari = df_hari.reset_index(drop=True)
+        # Simpan NO_PLAT asli untuk fallback
+        no_plat_asli = df_hari['NO_PLAT'].copy() if 'NO_PLAT' in df_hari.columns else pd.Series('', index=df_hari.index)
 
-        no_plat_asli = df_hari['NO_PLAT'].copy()
-
-        # Sinkronisasi
-        if ref_df is not None:
+        # --- Sinkronisasi dengan master ---
+        if ref_df is not None and not ref_df.empty:
+            # Hapus dulu kolom yang akan diisi ulang dari master
             for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
                 if col in df_hari.columns:
                     df_hari.drop(columns=[col], inplace=True)
-            kolom_ref = ['NOPIN', 'NO.PLAT'] + [c for c in ['Kecamatan', 'MERK', 'TYPE'] if c in ref_df.columns]
-            df_hari = df_hari.merge(ref_df[kolom_ref], on='NOPIN', how='left')
-            if 'NO.PLAT' not in df_hari.columns:
-                df_hari['NO.PLAT'] = no_plat_asli
+            # Merge berdasarkan NOPIN_NORM
+            df_hari = df_hari.merge(ref_df, on='NOPIN_NORM', how='left')
+            # Jika NO_PLAT hasil merge kosong, gunakan asli
+            if 'NO.PLAT' in df_hari.columns:
+                df_hari.rename(columns={'NO.PLAT': 'NO_PLAT'}, inplace=True)
+            if 'NO_PLAT' in df_hari.columns:
+                df_hari['NO_PLAT'] = df_hari['NO_PLAT'].fillna(no_plat_asli)
             else:
-                df_hari['NO.PLAT'] = df_hari['NO.PLAT'].fillna(no_plat_asli)
+                df_hari['NO_PLAT'] = no_plat_asli
         else:
-            if 'NO.PLAT' not in df_hari.columns:
-                df_hari['NO.PLAT'] = no_plat_asli
+            if 'NO_PLAT' not in df_hari.columns:
+                df_hari['NO_PLAT'] = no_plat_asli
             for col in ['Kecamatan', 'MERK', 'TYPE']:
                 if col not in df_hari.columns:
                     df_hari[col] = ''
 
+        # Isi Kecamatan yang kosong dengan 'Tidak Diketahui'
         if 'Kecamatan' not in df_hari.columns:
             df_hari['Kecamatan'] = 'Tidak Diketahui'
         else:
             df_hari['Kecamatan'] = df_hari['Kecamatan'].fillna('Tidak Diketahui').replace('', 'Tidak Diketahui')
 
+        # --- Tambah Tanggal ---
         try:
             tgl = f"2026-06-{int(sheet):02d}"
         except:
             tgl = sheet
         df_hari['TANGGAL'] = tgl
 
+        # Hapus duplikasi kolom
         df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
         cleaned[sheet] = df_hari
 
     if not cleaned:
         return None
 
+    # Gabungkan semua sheet harian
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
+    # Konversi numerik untuk tonase
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
         df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
     col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
 
+    # Analisis waktu (jika kolom jam tersedia)
     col_masuk = cari_kolom(df_master.columns, ['MASUK', 'JAM_1', 'TIMBANG1'])
     col_keluar = cari_kolom(df_master.columns, ['KELUAR', 'JAM_2', 'TIMBANG2'])
     if col_masuk and col_keluar:
@@ -180,7 +220,7 @@ def proses_data(sheets_dict, config):
         except:
             pass
 
-    # Agregasi
+    # --- Agregasi ---
     df_armada = pd.DataFrame()
     if col_netto:
         group_cols = ['NOPIN', 'NO_PLAT']
@@ -239,7 +279,7 @@ if "config" not in st.session_state:
 # -------------------------- ANTARMUKA --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual** untuk konfigurasi.")
+st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -264,7 +304,9 @@ with st.sidebar:
                 daily_sheets = st.multiselect("Sheet Harian", daily_candidates, default=daily_candidates)
                 # Pemetaan kolom armada
                 if armada_sheet:
-                    cols_arm = st.session_state.sheets[armada_sheet].columns.tolist()
+                    # Ambil contoh tampilan kolom dari sheet armada (asumsi header di baris pertama)
+                    df_arm = st.session_state.sheets[armada_sheet].iloc[0].values.tolist()
+                    cols_arm = [str(x) for x in df_arm]
                     col_nopin_arm = st.selectbox("Kolom NOPIN di List Armada", cols_arm)
                     col_plat_arm = st.selectbox("Kolom Plat di List Armada", cols_arm)
                     col_kec_arm = st.selectbox("Kolom Kecamatan (opsional)", ["(tidak ada)"] + cols_arm)
@@ -272,9 +314,10 @@ with st.sidebar:
                     col_type_arm = st.selectbox("Kolom Type (opsional)", ["(tidak ada)"] + cols_arm)
                 else:
                     col_nopin_arm = col_plat_arm = col_kec_arm = col_merk_arm = col_type_arm = None
-                # Pemetaan kolom harian
+                # Pemetaan kolom harian (dari sheet harian pertama)
                 if daily_sheets:
-                    cols_day = st.session_state.sheets[daily_sheets[0]].columns.tolist()
+                    df_day = st.session_state.sheets[daily_sheets[0]].iloc[0].values.tolist()
+                    cols_day = [str(x) for x in df_day]
                     col_nopin_day = st.selectbox("Kolom NOPIN di Harian", cols_day)
                     col_plat_day = st.selectbox("Kolom Plat di Harian", cols_day)
                 else:
@@ -292,12 +335,12 @@ with st.sidebar:
                 }
                 st.session_state.config = config
         else:
-            # Mode otomatis: reset config
+            # Mode otomatis: reset config agar deteksi berjalan
             st.session_state.config = {'armada_sheet': None, 'daily_sheets': []}
 
         if st.button("🚀 Proses Data", use_container_width=True):
             with st.spinner("Memproses..."):
-                # Tentukan sheet harian otomatis jika belum dipilih
+                # Tentukan sheet otomatis jika diperlukan
                 if mode == "Otomatis" or not st.session_state.config.get('daily_sheets'):
                     armada = next((s for s in st.session_state.sheets if 'list armada' in s.lower()), None)
                     if armada is None:
