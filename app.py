@@ -20,7 +20,7 @@ def baca_semua_sheet(uploaded_file):
             df = pd.read_excel(xls, sheet_name=name)
             if not df.empty:
                 sheets[name] = df
-        except:
+        except Exception:
             pass
     return sheets
 
@@ -76,7 +76,7 @@ def proses_data_armada(sheets_dict):
     for sheet in daily_sheets:
         try:
             df_raw = sheets_dict[sheet].copy()
-        except:
+        except Exception:
             skipped.append(sheet)
             continue
 
@@ -95,7 +95,7 @@ def proses_data_armada(sheets_dict):
             df_hari = df_raw.iloc[header_idx+1:].reset_index(drop=True)
             header_row = df_raw.iloc[header_idx].astype(str).str.strip().str.upper()
             df_hari.columns = [str(c).strip().upper() for c in header_row]
-        except:
+        except Exception:
             skipped.append(sheet)
             continue
 
@@ -122,13 +122,18 @@ def proses_data_armada(sheets_dict):
             for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
                 if col in df_hari.columns:
                     df_hari.drop(columns=[col], inplace=True)
-            # Merge dengan referensi
             kolom_ref = ['NOPIN', 'NO_PLAT'] + [c for c in ['Kecamatan', 'MERK', 'TYPE'] if c in ref_df.columns]
             df_hari = df_hari.merge(ref_df[kolom_ref], on='NOPIN', how='left')
         else:
             for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
                 if col not in df_hari.columns:
                     df_hari[col] = ''
+
+        # Pastikan Kecamatan terisi – jika kosong isi "Tidak Diketahui"
+        if 'Kecamatan' not in df_hari.columns:
+            df_hari['Kecamatan'] = 'Tidak Diketahui'
+        else:
+            df_hari['Kecamatan'] = df_hari['Kecamatan'].fillna('Tidak Diketahui').replace('', 'Tidak Diketahui')
 
         # Tambah kolom TANGGAL
         try:
@@ -137,7 +142,7 @@ def proses_data_armada(sheets_dict):
             tgl = sheet
         df_hari['TANGGAL'] = tgl
 
-        # ★ Hapus duplikasi kolom (penyebab utama error) ★
+        # Hapus duplikasi kolom (jika ada)
         df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
 
         cleaned[sheet] = df_hari
@@ -188,7 +193,7 @@ def proses_data_armada(sheets_dict):
         df_waktu = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
         df_waktu.columns = ['Jenis Armada', 'Rata2 Waktu Tempuh (menit)']
 
-    # Agregasi tambahan untuk grafik
+    # Agregasi per kecamatan (tampilkan SEMUA kecamatan)
     df_kec = pd.DataFrame()
     if 'Kecamatan' in df_master.columns and col_netto:
         df_kec = df_master.groupby('Kecamatan', dropna=False).agg(
@@ -196,6 +201,7 @@ def proses_data_armada(sheets_dict):
             Total_Tonase=(col_netto, 'sum')
         ).reset_index().sort_values('Total_Ritase', ascending=False)
 
+    # Tren harian
     df_tren = pd.DataFrame()
     if col_netto:
         df_tren = df_master.groupby('TANGGAL', dropna=False).agg(
@@ -252,7 +258,8 @@ if st.session_state.hasil is not None:
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filter Data")
     if 'Kecamatan' in df.columns:
-        kec_list = ['Semua'] + sorted(df['Kecamatan'].dropna().unique().tolist())
+        # Semua kecamatan termasuk "Tidak Diketahui" akan muncul
+        kec_list = ['Semua'] + sorted(df['Kecamatan'].unique().tolist())
         kec_terpilih = st.sidebar.selectbox("Kecamatan", kec_list)
     else:
         kec_terpilih = 'Semua'
@@ -309,6 +316,7 @@ if st.session_state.hasil is not None:
         fig1.update_traces(line_color='#0D9488')
         st.plotly_chart(fig1, use_container_width=True)
 
+        # Distribusi per Kecamatan – menampilkan SEMUA kecamatan
         if 'Kecamatan' in df_filter.columns:
             kec = df_filter.groupby('Kecamatan', dropna=False)[col_netto].sum().reset_index(name='Tonase')
             kec = kec.sort_values('Tonase', ascending=False)
@@ -327,6 +335,15 @@ if st.session_state.hasil is not None:
             jam = df_filter.dropna(subset=['JAM_INPUT']).groupby('JAM_INPUT').size().reset_index(name='Jumlah')
             fig4 = px.area(jam, x='JAM_INPUT', y='Jumlah', title='Pola Kedatangan per Jam')
             st.plotly_chart(fig4, use_container_width=True)
+
+    st.markdown("---")
+
+    # Tabel ringkasan per kecamatan (seluruhnya)
+    st.subheader("📋 Tabel Ringkasan per Kecamatan")
+    if not data['df_kec'].empty:
+        st.dataframe(data['df_kec'].style.format({'Total_Tonase': '{:,.0f}'}))
+    else:
+        st.info("Data kecamatan belum tersedia.")
 
     st.markdown("---")
 
