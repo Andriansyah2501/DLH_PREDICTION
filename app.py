@@ -43,7 +43,7 @@ def baca_semua_sheet(uploaded_file):
         except Exception: pass
     return sheets
 
-# -------------------------- Parsing Waktu --------------------------
+# -------------------------- Parsing Waktu Super Fleksibel --------------------------
 def parse_waktu(series):
     if pd.api.types.is_datetime64_any_dtype(series): return series
     if series.dtype == object: series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
@@ -636,7 +636,7 @@ if "grafik" not in st.session_state: st.session_state.grafik = {}
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**. Alur machine learning untuk clustering otomatis tersedia.")
+st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
