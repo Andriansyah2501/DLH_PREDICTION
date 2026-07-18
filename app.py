@@ -415,7 +415,7 @@ def lakukan_clustering_ml(df_armada, n_clusters=3):
     if 'Rata_Durasi' in df_fitur.columns:
         ringkasan['Rata_Durasi'] = df_fitur.groupby('Cluster')['Rata_Durasi'].mean().values
 
-    return df_fitur, ringkasan, inertia, sil_score, X_scaled
+    return df_fitur, ringkasan, inertia, sil_score, X_scaled, fitur_cols
 
 def plot_elbow(X_scaled, max_k=8):
     inertias = []
@@ -547,6 +547,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     styles = getSampleStyleSheet()
     story = []
+    temp_files = []  # Perbaikan: deklarasi temp_files
 
     PRIMARY = colors.HexColor("#1E3A8A")
     SECONDARY = colors.HexColor("#0D9488")
@@ -620,6 +621,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
             grafik_dict['tren'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
             pio.write_image(grafik_dict['tren'], tmp.name, format='png', width=500, height=200, scale=2)
+            temp_files.append(tmp.name)
             story.append(Image(tmp.name, width=450, height=180))
             if hari_puncak is not None:
                 tgl_puncak_pdf = pd.Timestamp(hari_puncak['TANGGAL']).strftime('%d %B %Y') if pd.notna(hari_puncak.get('TANGGAL')) else "-"
@@ -635,6 +637,7 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
             grafik_dict['kec_ton'].update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
             pio.write_image(grafik_dict['kec_ton'], tmp.name, format='png', width=500, height=200, scale=2)
+            temp_files.append(tmp.name)
             story.append(Image(tmp.name, width=450, height=180))
             narrative_kec = (
                 f"<b>Interpretasi Distribusi Wilayah:</b> Diagram batang di atas secara visual menegaskan bahwa beban pengangkutan sampah "
@@ -671,7 +674,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     story.append(Paragraph(rekomendasi_teks, body_style))
 
     doc.build(story)
-    # Hapus file sementara setelah build
     for f in temp_files:
         try: os.unlink(f)
         except: pass
@@ -761,6 +763,8 @@ if "hasil" not in st.session_state: st.session_state.hasil = None
 if "sheets" not in st.session_state: st.session_state.sheets = None
 if "config" not in st.session_state: st.session_state.config = None
 if "grafik" not in st.session_state: st.session_state.grafik = {}
+if "df_cluster" not in st.session_state: st.session_state.df_cluster = None
+if "fitur_cols" not in st.session_state: st.session_state.fitur_cols = None
 
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
@@ -1044,9 +1048,12 @@ if st.session_state.hasil is not None:
                 st.plotly_chart(fig_sil, use_container_width=True)
 
             n_clusters = st.slider("Jumlah Cluster", min_value=2, max_value=min(5, len(df_armada)-1), value=3, key="n_cluster")
-            df_cluster, ringkasan_cluster, inertia, sil_score, X_scaled = lakukan_clustering_ml(df_armada, n_clusters=n_clusters)
+            hasil_cluster = lakukan_clustering_ml(df_armada, n_clusters=n_clusters)
+            if hasil_cluster[0] is not None:
+                df_cluster, ringkasan_cluster, inertia, sil_score, X_scaled, fitur_cols = hasil_cluster
+                st.session_state.df_cluster = df_cluster
+                st.session_state.fitur_cols = fitur_cols
 
-            if df_cluster is not None:
                 st.subheader("📊 Evaluasi Cluster")
                 col_met1, col_met2 = st.columns(2)
                 col_met1.metric("Inertia", f"{inertia:,.0f}")
@@ -1091,10 +1098,6 @@ if st.session_state.hasil is not None:
                             anggota = df_cluster[df_cluster['Cluster'] == c][['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']]
                         st.write(f"**Cluster {c}** ({len(anggota)} armada)")
                         st.dataframe(anggota, use_container_width=True)
-
-                # Simpan data clustering untuk digunakan di tab Modelling
-                st.session_state.df_cluster = df_cluster
-                st.session_state.fitur_cols = fitur_cols_elbow  # fitur yang sama dengan elbow
             else:
                 st.warning("Data tidak mencukupi untuk clustering.")
 
@@ -1102,7 +1105,7 @@ if st.session_state.hasil is not None:
         st.header("🤖 Modelling – Klasifikasi Cluster")
         st.markdown("Latih model machine learning untuk memprediksi cluster armada berdasarkan fitur Trip, Tonase, dan Durasi (jika tersedia).")
 
-        if 'df_cluster' not in st.session_state or st.session_state.df_cluster is None:
+        if st.session_state.df_cluster is None:
             st.warning("Silakan lakukan clustering terlebih dahulu di tab '🔬 Clustering'.")
         else:
             df_cluster = st.session_state.df_cluster
@@ -1142,7 +1145,7 @@ if st.session_state.hasil is not None:
     st.session_state.grafik['type_bar'] = fig_type_bar
     st.session_state.grafik['type_pie'] = px.pie(df_type, names='TYPE', values='Total_Ritase', template='plotly_white') if not df_type.empty else None
 
-    # ---------- PER KECAMATAN (dengan PDF per kecamatan) ----------
+    # ---------- PER KECAMATAN ----------
     st.markdown("---")
     st.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
