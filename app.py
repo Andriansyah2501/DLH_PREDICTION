@@ -20,7 +20,7 @@ def baca_semua_sheet(uploaded_file):
             df = pd.read_excel(xls, sheet_name=name)
             if not df.empty:
                 sheets[name] = df
-        except Exception:
+        except:
             pass
     return sheets
 
@@ -72,17 +72,15 @@ def proses_data_armada(sheets_dict):
 
     cleaned = {}
     skipped = []
-    # Daftar kolom inti yang harus ada di setiap DataFrame
-    base_cols = ['NOPIN', 'NO_PLAT', 'TANGGAL']
 
     for sheet in daily_sheets:
         try:
             df_raw = sheets_dict[sheet].copy()
-        except Exception:
+        except:
             skipped.append(sheet)
             continue
 
-        # Cari header
+        # Cari header (baris yang mengandung PINTU / PLAT MOBIL / NOPIN)
         header_idx = None
         for idx, row in df_raw.iterrows():
             row_str = " ".join(row.astype(str).dropna().str.upper().values)
@@ -97,7 +95,7 @@ def proses_data_armada(sheets_dict):
             df_hari = df_raw.iloc[header_idx+1:].reset_index(drop=True)
             header_row = df_raw.iloc[header_idx].astype(str).str.strip().str.upper()
             df_hari.columns = [str(c).strip().upper() for c in header_row]
-        except Exception:
+        except:
             skipped.append(sheet)
             continue
 
@@ -118,11 +116,13 @@ def proses_data_armada(sheets_dict):
 
         df_hari = df_hari.reset_index(drop=True)
 
-        # Sinkronisasi (Tugas 2)
+        # Sinkronisasi dengan master (Tugas 2)
         if ref_df is not None:
+            # Hapus dulu kolom yang akan diupdate dari master (kecuali NOPIN)
             for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
                 if col in df_hari.columns:
                     df_hari.drop(columns=[col], inplace=True)
+            # Merge dengan referensi
             kolom_ref = ['NOPIN', 'NO_PLAT'] + [c for c in ['Kecamatan', 'MERK', 'TYPE'] if c in ref_df.columns]
             df_hari = df_hari.merge(ref_df[kolom_ref], on='NOPIN', how='left')
         else:
@@ -130,40 +130,23 @@ def proses_data_armada(sheets_dict):
                 if col not in df_hari.columns:
                     df_hari[col] = ''
 
-        # Tambah TANGGAL
+        # Tambah kolom TANGGAL
         try:
             tgl = f"2026-06-{int(sheet):02d}"
         except:
             tgl = sheet
         df_hari['TANGGAL'] = tgl
 
-        # Pastikan semua kolom inti ada
-        for c in base_cols:
-            if c not in df_hari.columns:
-                df_hari[c] = np.nan
+        # ★ Hapus duplikasi kolom (penyebab utama error) ★
+        df_hari = df_hari.loc[:, ~df_hari.columns.duplicated()]
 
         cleaned[sheet] = df_hari
 
     if not cleaned:
         return None
 
-    # Sebelum concat, cari union semua kolom
-    all_columns = set()
-    for df in cleaned.values():
-        all_columns.update(df.columns)
-    all_columns = sorted(list(all_columns))
-
-    # Reindex setiap DataFrame agar kolomnya seragam
-    cleaned_aligned = []
-    for df in cleaned.values():
-        # Tambahkan kolom yang hilang dengan NaN
-        for col in all_columns:
-            if col not in df.columns:
-                df[col] = np.nan
-        cleaned_aligned.append(df[all_columns])  # urutkan kolom
-
-    # Gabungkan dengan aman
-    df_master = pd.concat(cleaned_aligned, ignore_index=True, sort=False)
+    # Gabungkan semua DataFrame yang sudah bersih
+    df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
     # Konversi numerik kolom tonase
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
@@ -171,7 +154,7 @@ def proses_data_armada(sheets_dict):
         df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
     col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
 
-    # Analisis waktu
+    # Analisis waktu (jika kolom jam tersedia)
     col_masuk = cari_kolom(df_master.columns, ['MASUK', 'JAM_1', 'TIMBANG1'])
     col_keluar = cari_kolom(df_master.columns, ['KELUAR', 'JAM_2', 'TIMBANG2'])
     if col_masuk and col_keluar:
@@ -184,7 +167,7 @@ def proses_data_armada(sheets_dict):
         except:
             pass
 
-    # Agregasi
+    # Agregasi (Tugas 3 & 4)
     df_armada = pd.DataFrame()
     if col_netto:
         group_cols = ['NOPIN', 'NO_PLAT']
@@ -199,11 +182,13 @@ def proses_data_armada(sheets_dict):
     teraktif = df_armada.iloc[0] if not df_armada.empty else None
     tidak_efisien = df_armada[df_armada['Total_Trip'] > 0].iloc[-1] if not df_armada.empty and (df_armada['Total_Trip'] > 0).any() else None
 
+    # Rata‑rata waktu per jenis armada (Tugas 5)
     df_waktu = pd.DataFrame()
     if 'DURASI_MENIT' in df_master.columns and 'TYPE' in df_master.columns:
         df_waktu = df_master.dropna(subset=['DURASI_MENIT']).groupby('TYPE', dropna=False)['DURASI_MENIT'].mean().reset_index()
         df_waktu.columns = ['Jenis Armada', 'Rata2 Waktu Tempuh (menit)']
 
+    # Agregasi tambahan untuk grafik
     df_kec = pd.DataFrame()
     if 'Kecamatan' in df_master.columns and col_netto:
         df_kec = df_master.groupby('Kecamatan', dropna=False).agg(
