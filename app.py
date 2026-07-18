@@ -412,7 +412,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     story.append(Paragraph("Visualisasi Data", heading_style))
     for key, fig in grafik_dict.items():
         if fig is not None:
-            # Pastikan latar belakang putih agar warna kontras
             fig.update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 pio.write_image(fig, tmp.name, format='png', width=500, height=300, scale=2)
@@ -442,7 +441,7 @@ if "grafik" not in st.session_state:
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Duplikasi data (termasuk varian 'Batam Kota') akan dibersihkan otomatis.")
+st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Semua analisis (global & per kecamatan) ditampilkan otomatis.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -529,44 +528,20 @@ if st.session_state.hasil is not None:
     df_waktu_jenis = data['df_waktu_jenis']
     df_tren = data['df_tren']
 
-    st.sidebar.markdown("---")
-    st.sidebar.header("📍 Analisis per Kecamatan")
-    if 'Kecamatan' in df_master.columns:
-        daftar_kec = sorted(df_master['Kecamatan'].unique().tolist())
-        kec_terpilih = st.sidebar.selectbox("Pilih Kecamatan", daftar_kec)
-        df_kec_filter = df_master[df_master['Kecamatan'] == kec_terpilih]
-    else:
-        kec_terpilih = None
-        df_kec_filter = df_master
+    # ---------------------- ANALISIS KESELURUHAN (GLOBAL) ----------------------
+    st.header("📊 Analisis Keseluruhan (Global)")
+    total_trip_global = len(df_master)
+    total_armada_global = df_master['NOPIN'].nunique()
+    total_tonase_global = df_master[col_netto].sum() / 1000 if col_netto else 0
+    durasi_rata_global = df_master['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df_master.columns else 0
 
-    st.subheader(f"📌 Statistik Kecamatan: **{kec_terpilih}**")
-    total_trip_kec = len(df_kec_filter)
-    total_armada_kec = df_kec_filter['NOPIN'].nunique()
-    total_tonase_kec = df_kec_filter[col_netto].sum() / 1000 if col_netto else 0
-    durasi_rata_kec = df_kec_filter['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df_kec_filter.columns else 0
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Trip", total_trip_global)
+    col2.metric("Armada Aktif", total_armada_global)
+    col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
+    col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
-    colA, colB, colC, colD = st.columns(4)
-    colA.metric("Total Trip", total_trip_kec)
-    colB.metric("Armada Aktif", total_armada_kec)
-    colC.metric("Total Tonase (Ton)", f"{total_tonase_kec:,.1f}")
-    colD.metric("Rata² Durasi (menit)", f"{durasi_rata_kec:.1f}" if durasi_rata_kec else "-")
-
-    st.subheader(f"🚚 Daftar Armada di {kec_terpilih}")
-    if col_netto:
-        armada_kec = df_kec_filter.groupby(['NOPIN', 'NO_PLAT'], dropna=False).agg(
-            Total_Trip=('NOPIN', 'count'),
-            Total_Tonase=(col_netto, 'sum')
-        ).reset_index().sort_values('Total_Trip', ascending=False)
-        st.dataframe(armada_kec.style.format({'Total_Tonase': '{:,.0f}'}), use_container_width=True)
-
-        fig_top_kec = px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip',
-                             color='Total_Trip', color_continuous_scale='Blues',
-                             title=f'10 Armada Teraktif di {kec_terpilih}',
-                             template='plotly_white')
-        st.plotly_chart(fig_top_kec, use_container_width=True)
-
-    st.markdown("---")
-
+    # Ringkasan per Kecamatan (global)
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
@@ -583,6 +558,7 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
+    # Ringkasan per Type (global)
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
         col1, col2 = st.columns([2, 1])
@@ -599,6 +575,7 @@ if st.session_state.hasil is not None:
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
 
+    # Tren Harian (global)
     if not df_tren.empty:
         st.subheader("📈 Tren Harian (Semua Kecamatan)")
         fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase',
@@ -607,6 +584,7 @@ if st.session_state.hasil is not None:
         fig_tren.update_traces(line_color='#0D9488')
         st.plotly_chart(fig_tren, use_container_width=True)
 
+    # Armada Teraktif & Tidak Efisien (global)
     st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien (Keseluruhan)")
     if teraktif is not None:
         col_a, col_b = st.columns(2)
@@ -616,6 +594,7 @@ if st.session_state.hasil is not None:
             if tidak_efisien is not None:
                 st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN', '-')} ({tidak_efisien.get('NO_PLAT', '')}) – {int(tidak_efisien.get('Total_Trip', 0))} trip")
 
+    # Waktu Tempuh per Jenis (global)
     if not df_waktu_jenis.empty:
         st.subheader("⏱️ Rata‑rata Waktu Tempuh per Jenis Armada")
         st.dataframe(df_waktu_jenis.style.format({'Rata2 Waktu Tempuh (menit)': '{:.1f}'}))
@@ -625,7 +604,7 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_hist, use_container_width=True)
             st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Simpan grafik untuk PDF (semua sudah memakai template 'plotly_white')
+    # Simpan grafik untuk PDF (global)
     st.session_state.grafik['tren'] = fig_tren
     st.session_state.grafik['kec_ton'] = fig_ton
     st.session_state.grafik['type_bar'] = fig_type_bar
@@ -633,13 +612,47 @@ if st.session_state.hasil is not None:
     if 'hist_durasi' in locals():
         st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Ringkasan Eksekutif
+    # ---------------------- ANALISIS PER KECAMATAN ----------------------
+    st.markdown("---")
+    st.header("📍 Analisis per Kecamatan")
+    if 'Kecamatan' in df_master.columns:
+        daftar_kec = sorted(df_master['Kecamatan'].unique().tolist())
+        kec_terpilih = st.selectbox("Pilih Kecamatan", daftar_kec, key="kec_global")
+        df_kec_filter = df_master[df_master['Kecamatan'] == kec_terpilih]
+
+        total_trip_kec = len(df_kec_filter)
+        total_armada_kec = df_kec_filter['NOPIN'].nunique()
+        total_tonase_kec = df_kec_filter[col_netto].sum() / 1000 if col_netto else 0
+        durasi_rata_kec = df_kec_filter['DURASI_MENIT'].mean() if 'DURASI_MENIT' in df_kec_filter.columns else 0
+
+        colA, colB, colC, colD = st.columns(4)
+        colA.metric("Total Trip", total_trip_kec)
+        colB.metric("Armada Aktif", total_armada_kec)
+        colC.metric("Total Tonase (Ton)", f"{total_tonase_kec:,.1f}")
+        colD.metric("Rata² Durasi (menit)", f"{durasi_rata_kec:.1f}" if durasi_rata_kec else "-")
+
+        st.subheader(f"🚚 Daftar Armada di {kec_terpilih}")
+        if col_netto:
+            armada_kec = df_kec_filter.groupby(['NOPIN', 'NO_PLAT'], dropna=False).agg(
+                Total_Trip=('NOPIN', 'count'),
+                Total_Tonase=(col_netto, 'sum')
+            ).reset_index().sort_values('Total_Trip', ascending=False)
+            st.dataframe(armada_kec.style.format({'Total_Tonase': '{:,.0f}'}), use_container_width=True)
+
+            fig_top_kec = px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip',
+                                 color='Total_Trip', color_continuous_scale='Blues',
+                                 title=f'10 Armada Teraktif di {kec_terpilih}',
+                                 template='plotly_white')
+            st.plotly_chart(fig_top_kec, use_container_width=True)
+
+    # ---------------------- RINGKASAN EKSEKUTIF ----------------------
+    st.markdown("---")
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
     ringkasan_teks = buat_ringkasan_eksekutif(data)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
-    # PDF
+    # ---------------------- PDF ----------------------
     st.subheader("📑 Laporan PDF Lengkap (Warna Sesuai Dashboard)")
     if st.button("📥 Buat Laporan PDF"):
         with st.spinner("Membuat PDF..."):
@@ -651,7 +664,7 @@ if st.session_state.hasil is not None:
                 mime="application/pdf"
             )
 
-    # Unduhan Data
+    # ---------------------- UNDUHAN DATA ----------------------
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
