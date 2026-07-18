@@ -12,7 +12,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 import tempfile
 import os
 
-# ======================== FUNGSI BANTU ========================
+# -------------------------- Fungsi Bantu --------------------------
 def normalisasi_nopin(val):
     if pd.isna(val): return ''
     return re.sub(r'[^A-Z0-9]', '', str(val).upper())
@@ -40,7 +40,7 @@ def baca_semua_sheet(uploaded_file):
         except Exception: pass
     return sheets
 
-# ======================== PARSING WAKTU ========================
+# -------------------------- Parsing Waktu Fleksibel --------------------------
 def parse_waktu(series):
     if pd.api.types.is_datetime64_any_dtype(series): return series
     if series.dtype == object: series = series.astype(str).str.strip().str.replace(r'\.', ':', regex=True)
@@ -90,7 +90,7 @@ def hitung_durasi(df_master):
     else: st.warning("⚠️ Gagal parsing waktu.")
     return df_master
 
-# ======================== PROSES DATA ========================
+# -------------------------- Proses Data --------------------------
 def proses_list_armada(sheets_dict, armada_sheet, config):
     df_arm_raw = sheets_dict[armada_sheet].copy()
     ref_df, ref_dict = None, {}
@@ -232,7 +232,9 @@ def hitung_tren_harian(df_master, col_netto):
     if col_netto:
         df_tren = df_master.groupby('TANGGAL', dropna=False).agg(
             Total_Ritase=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum')
-        ).reset_index().sort_values('TANGGAL')
+        ).reset_index()
+        df_tren['TANGGAL'] = pd.to_datetime(df_tren['TANGGAL'])
+        df_tren = df_tren.sort_values('TANGGAL')
         return df_tren
     return pd.DataFrame()
 
@@ -334,7 +336,7 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         'col_netto': col_netto, 'skipped': skipped, 'cleaned_count': len(cleaned)
     }
 
-# ======================== RINGKASAN EKSEKUTIF & PDF ========================
+# -------------------------- Ringkasan Eksekutif & PDF --------------------------
 def buat_ringkasan_eksekutif(data):
     df = data['df_master']
     col_netto = data['col_netto']
@@ -522,16 +524,16 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     buffer.seek(0)
     return buffer
 
-# ======================== SESSION STATE ========================
+# -------------------------- SESSION STATE --------------------------
 if "hasil" not in st.session_state: st.session_state.hasil = None
 if "sheets" not in st.session_state: st.session_state.sheets = None
 if "config" not in st.session_state: st.session_state.config = None
 if "grafik" not in st.session_state: st.session_state.grafik = {}
 
-# ======================== ANTARMUKA STREAMLIT ========================
+# -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**. Data ditampilkan hingga 1000 baris dengan penomoran mulai 1.")
+st.markdown("Unggah file Excel, pilih mode **Otomatis**, **Manual**, atau **Gunakan Sheet Master Data**.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -603,7 +605,7 @@ with st.sidebar:
                     st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Data siap ditampilkan.")
                     st.balloons()
 
-# ======================== TAMPILAN HASIL ========================
+# Tampilkan hasil
 if st.session_state.hasil is not None:
     data = st.session_state.hasil
     df_master_original = data['df_master']
@@ -644,7 +646,7 @@ if st.session_state.hasil is not None:
     df_master = df_master.sort_values(by=sort_cols).reset_index(drop=True)
 
     # ---------- POIN 1.0 ----------
-    st.header("📋 Penggabungan Data Harian (Konsolidasi)")
+    st.header("📋 Poin 1.0: Penggabungan Data Harian (Konsolidasi)")
     col_prioritas = ['TANGGAL', 'NOPIN', 'NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']
     kolom_sisa = [col for col in df_master.columns if col not in col_prioritas]
     df_jawaban_1 = df_master[col_prioritas + kolom_sisa]
@@ -673,6 +675,18 @@ if st.session_state.hasil is not None:
     col3.metric("Total Tonase (Ton)", f"{total_tonase_global:,.1f}")
     col4.metric("Rata² Durasi (menit)", f"{durasi_rata_global:.1f}" if durasi_rata_global else "-")
 
+    # ---------- MASTER DATA (1000 BARIS PERTAMA) ----------
+    st.subheader("📋 Master Data (1000 Baris Pertama, dengan No Urut)")
+    cols_waktu = ['NOPIN', 'NO_PLAT', 'Kecamatan', 'TANGGAL']
+    if col_netto: cols_waktu.append(col_netto)
+    if 'MASUK_ORI' in df_master.columns: cols_waktu.append('MASUK_ORI')
+    if 'KELUAR_ORI' in df_master.columns: cols_waktu.append('KELUAR_ORI')
+    if 'DURASI_MENIT' in df_master.columns: cols_waktu.append('DURASI_MENIT')
+
+    df_show = df_master.head(1000).copy()
+    df_show.insert(0, 'No', range(1, len(df_show)+1))
+    cols_ada = ['No'] + [c for c in cols_waktu if c in df_show.columns]
+    st.dataframe(df_show[cols_ada], use_container_width=True, hide_index=True)
 
     # ---------- RINGKASAN KECAMATAN ----------
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
@@ -745,20 +759,41 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_durasi_type, use_container_width=True)
             st.session_state.grafik['durasi_type'] = fig_durasi_type
 
-    # ---------- TREN HARIAN 30 HARI ----------
+    # ---------- TREN HARIAN (TAMPIL SEMUA TANGGAL) ----------
     st.markdown("---")
     st.subheader("📈 Tren Harian Ritase 30 Hari")
     if not df_tren.empty:
+        df_tren['TANGGAL'] = pd.to_datetime(df_tren['TANGGAL'])
+        df_tren = df_tren.sort_values('TANGGAL')
         max_row = df_tren.loc[df_tren['Total_Ritase'].idxmax()]
-        fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase', markers=True,
-                           title='Tren Frekuensi Ritase Harian (Juni 2026)', template='plotly_white')
-        fig_tren.update_traces(line=dict(color='#0D9488', width=3), marker=dict(size=8, color='#0D9488', line=dict(width=1, color='white')))
-        fig_tren.add_annotation(x=max_row['TANGGAL'], y=max_row['Total_Ritase'],
-                                text=f"Puncak: {int(max_row['Total_Ritase'])} trip",
-                                showarrow=True, arrowhead=2, arrowsize=1, arrowcolor='#0D9488', ax=0, ay=-30,
-                                font=dict(color='#0D9488', size=10))
-        fig_tren.update_layout(xaxis_title='Tanggal', yaxis_title='Total Trip (Ritase)', hovermode='x unified',
-                               xaxis=dict(tickformat='%d %b', tickangle=-45), margin=dict(l=40, r=40, t=60, b=40))
+
+        fig_tren = px.line(
+            df_tren,
+            x='TANGGAL',
+            y='Total_Ritase',
+            markers=True,
+            title='Tren Frekuensi Ritase Harian (Juni 2026)',
+            template='plotly_white'
+        )
+        fig_tren.update_traces(
+            line=dict(color='#0D9488', width=3),
+            marker=dict(size=8, color='#0D9488', line=dict(width=1, color='white')),
+            hovertemplate='<b>Tanggal:</b> %{x|%d %B %Y}<br><b>Ritase:</b> %{y} trip<extra></extra>'
+        )
+        fig_tren.add_annotation(
+            x=max_row['TANGGAL'],
+            y=max_row['Total_Ritase'],
+            text=f"Puncak: {int(max_row['Total_Ritase'])} trip",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowcolor='#0D9488', ax=0, ay=-30,
+            font=dict(color='#0D9488', size=10)
+        )
+        fig_tren.update_layout(
+            xaxis_title='Tanggal',
+            yaxis_title='Total Trip (Ritase)',
+            hovermode='x unified',
+            xaxis=dict(tickformat='%d %b', tickangle=-45, dtick='D1', tickmode='linear'),
+            margin=dict(l=40, r=40, t=60, b=60)
+        )
         st.plotly_chart(fig_tren, use_container_width=True)
 
     st.session_state.grafik['tren'] = fig_tren
