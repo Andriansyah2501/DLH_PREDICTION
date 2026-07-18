@@ -8,7 +8,7 @@ import os
 from io import BytesIO
 
 # -------------------------- KONFIGURASI --------------------------
-st.set_page_config(page_title="Dashboard Armada", page_icon="🚛", layout="wide")
+st.set_page_config(page_title="Dashboard Armada DLH", page_icon="🚛", layout="wide")
 
 st.markdown("""
 <style>
@@ -25,11 +25,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------- API DEEPSEEK --------------------------
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-xxxxxxxxxxxxxxxxxxxxxxxx")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
 def laporan_ai(statistik: str) -> str:
-    if not DEEPSEEK_API_KEY.startswith("sk-"):
+    if not DEEPSEEK_API_KEY:
         return "⚠️ API Key DeepSeek belum diatur."
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     prompt = f"""
@@ -151,13 +151,21 @@ def proses_data(sheets_dict, mapping):
     })
     return df_armada, df_clean, perbaikan
 
+# -------------------------- INISIALISASI SESSION STATE --------------------------
+if "data_processed" not in st.session_state:
+    st.session_state.data_processed = False
+    st.session_state.df_clean = None
+    st.session_state.stat_armada = None
+    st.session_state.fig1 = None
+    st.session_state.fig2 = None
+    st.session_state.fig3 = None
+    st.session_state.fig4 = None
+    st.session_state.laporan_teks = ""
+
 # -------------------------- APLIKASI UTAMA --------------------------
 def main():
     st.title("🚛 Dashboard Analitik & Rekomendasi Armada")
-    st.markdown("Unggah file Excel dengan 30 sheet (1 List Armada + 29 Harian) atau format lainnya. Sistem akan otomatis mendeteksi dan memproses data, lalu Anda bisa **mengunduh semua hasil** di akhir.")
-
-    # Inisialisasi variabel untuk menghindari NameError
-    laporan_teks = ""
+    st.markdown("Unggah file Excel dengan banyak sheet (1 List Armada + 29 Harian) atau format lainnya. Sistem akan otomatis mendeteksi dan memproses data, lalu Anda bisa **mengunduh semua hasil** di akhir.")
 
     with st.sidebar:
         uploaded_file = st.file_uploader("📂 Pilih file Excel", type=["xlsx", "xls"])
@@ -210,11 +218,17 @@ def main():
             st.sidebar.info(f"Sheet Armada: {mapping['armada_sheet']}\nJumlah sheet harian: {len(mapping['daily_sheets'])}")
 
         if st.sidebar.button("🚀 Proses Data", use_container_width=True):
-            # Progress bar ala Colab
-            progress_bar = st.progress(0, text="Menggabungkan sheet...")
             with st.spinner("Menggabungkan dan membersihkan data..."):
                 df_armada, df_clean, perbaikan = proses_data(sheets_dict, mapping)
-            progress_bar.progress(30, text="Menghitung metrik...")
+
+            st.session_state.data_processed = True
+            st.session_state.df_clean = df_clean
+            st.success(f"✅ Data berhasil diproses. {perbaikan} ketidaksesuaian diperbaiki berdasarkan List Armada.")
+            st.balloons()
+
+        # Jika data sudah diproses, tampilkan dashboard
+        if st.session_state.data_processed:
+            df_clean = st.session_state.df_clean
 
             # Filter
             st.sidebar.header("🔍 Filter")
@@ -233,9 +247,7 @@ def main():
                 df_filtered = df_filtered[(df_filtered["Waktu Berangkat"] >= pd.Timestamp(rentang[0])) &
                                           (df_filtered["Waktu Berangkat"] <= pd.Timestamp(rentang[1]))]
 
-            progress_bar.progress(60, text="Membuat visualisasi...")
-
-            # Hitung statistik
+            # Metrik
             total_trip = len(df_filtered)
             total_tonase = df_filtered["Tonase"].sum()
             rata_waktu = df_filtered["Waktu Tempuh (jam)"].mean()
@@ -246,7 +258,7 @@ def main():
             paling_sedikit = stat_armada.loc[stat_armada["Trip"].idxmin()] if not stat_armada.empty else None
             avg_jenis = df_filtered.groupby("Jenis Armada")["Waktu Tempuh (jam)"].mean().reset_index()
 
-            # Simpan objek grafik untuk diunduh nanti
+            # Grafik
             top_trip = df_filtered.groupby("No. Pintu").size().reset_index(name="Trip").nlargest(10, "Trip")
             fig1 = px.bar(top_trip, x="No. Pintu", y="Trip", color="Trip", color_continuous_scale="viridis",
                           title="🏆 10 Armada dengan Trip Terbanyak")
@@ -265,7 +277,12 @@ def main():
             fig4 = px.bar(avg_jenis, x="Jenis Armada", y="Waktu Tempuh (jam)", color="Waktu Tempuh (jam)",
                           color_continuous_scale="blues", title="⏱️ Rata-rata Waktu Tempuh per Jenis")
 
-            progress_bar.progress(90, text="Menyiapkan laporan...")
+            # Simpan di session state
+            st.session_state.stat_armada = stat_armada
+            st.session_state.fig1 = fig1
+            st.session_state.fig2 = fig2
+            st.session_state.fig3 = fig3
+            st.session_state.fig4 = fig4
 
             # Tampilkan metrik
             col1, col2, col3, col4 = st.columns(4)
@@ -296,7 +313,6 @@ def main():
                     st.warning(f"### 🐌 Armada Paling Tidak Efisien\n**{paling_sedikit['No. Pintu']}**  \nTrip: {int(paling_sedikit['Trip'])} | Tonase: {paling_sedikit['Tonase']:,.1f}")
 
             with st.expander("📊 Lihat Data Lengkap & Statistik"):
-                # Tanpa background_gradient agar tidak perlu matplotlib
                 st.dataframe(stat_armada.sort_values("Trip", ascending=False).style.format({"Tonase": "{:,.1f}"}))
 
             # Laporan AI
@@ -312,20 +328,16 @@ Rata-rata waktu tempuh per jenis armada:
             """
             if st.button("🔮 Buat Laporan AI", key="laporan_btn"):
                 with st.spinner("Menghubungi DeepSeek..."):
-                    laporan_teks = laporan_ai(statistik_teks)
+                    st.session_state.laporan_teks = laporan_ai(statistik_teks)
                 st.markdown("### 📄 Hasil Laporan")
-                st.write(laporan_teks)
+                st.write(st.session_state.laporan_teks)
             else:
                 st.info("Klik tombol di atas untuk menghasilkan laporan otomatis (API Key diperlukan).")
 
-            progress_bar.progress(100, text="Selesai! Siap unduh.")
-            st.success("✅ Semua data berhasil diproses! Gunakan tombol di bawah untuk mengunduh hasil.")
-
-            # ========== BAGIAN DOWNLOAD ==========
+            # Bagian Download
             st.markdown("## 📥 Unduh Hasil Analisis")
             st.markdown("Pilih file yang ingin Anda unduh:")
 
-            # 1. Master Data (Excel)
             @st.cache_data
             def ke_excel(df):
                 output = BytesIO()
@@ -333,14 +345,16 @@ Rata-rata waktu tempuh per jenis armada:
                     df.to_excel(writer, index=False, sheet_name='Master Data')
                 return output.getvalue()
 
-            # 2. Statistik Armada (CSV)
             @st.cache_data
             def ke_csv(df):
                 return df.to_csv(index=False).encode('utf-8')
 
-            # 3. Grafik (PNG)
             def grafik_ke_png(fig):
-                return pio.to_image(fig, format='png', scale=2)
+                try:
+                    return pio.to_image(fig, format='png', scale=2)
+                except Exception as e:
+                    st.error(f"Gagal mengonversi grafik: {e}. Pastikan kaleido terinstal (pip install kaleido).")
+                    return None
 
             col_d1, col_d2, col_d3, col_d4 = st.columns(4)
             with col_d1:
@@ -361,26 +375,36 @@ Rata-rata waktu tempuh per jenis armada:
                 )
             with col_d3:
                 pilihan_grafik = st.selectbox("Pilih grafik", ["Trip Terbanyak", "Distribusi Jenis", "Tonase Terbesar", "Waktu Tempuh per Jenis"])
+                fig_download = None
                 if pilihan_grafik == "Trip Terbanyak":
-                    fig_download = fig1
+                    fig_download = st.session_state.fig1
                 elif pilihan_grafik == "Distribusi Jenis":
-                    fig_download = fig2
+                    fig_download = st.session_state.fig2
                 elif pilihan_grafik == "Tonase Terbesar":
-                    fig_download = fig3
+                    fig_download = st.session_state.fig3
                 else:
-                    fig_download = fig4
-                st.download_button(
-                    label="📸 Unduh Grafik (PNG)",
-                    data=grafik_ke_png(fig_download),
-                    file_name=f"grafik_{pilihan_grafik.lower().replace(' ', '_')}.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
+                    fig_download = st.session_state.fig4
+
+                if fig_download is not None:
+                    png_data = grafik_ke_png(fig_download)
+                    if png_data:
+                        st.download_button(
+                            label="📸 Unduh Grafik (PNG)",
+                            data=png_data,
+                            file_name=f"grafik_{pilihan_grafik.lower().replace(' ', '_')}.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
+                    else:
+                        st.warning("Grafik tidak dapat diunduh (kaleido tidak terinstal).")
+                else:
+                    st.warning("Proses data terlebih dahulu.")
+
             with col_d4:
-                if laporan_teks:
+                if st.session_state.laporan_teks:
                     st.download_button(
                         label="📝 Laporan AI (TXT)",
-                        data=laporan_teks.encode('utf-8'),
+                        data=st.session_state.laporan_teks.encode('utf-8'),
                         file_name="laporan_ai.txt",
                         mime="text/plain",
                         use_container_width=True
