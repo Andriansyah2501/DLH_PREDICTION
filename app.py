@@ -11,6 +11,8 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 import tempfile
 import os
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
 # -------------------------- Fungsi Bantu --------------------------
 def normalisasi_nopin(val):
@@ -191,6 +193,11 @@ def hitung_agregasi_armada(df_master, col_netto):
     df_armada = df_master.groupby(group_cols, dropna=False).agg(
         Total_Trip=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum')
     ).reset_index().sort_values('Total_Trip', ascending=False)
+    # tambahkan rata‑rata durasi jika tersedia
+    if 'DURASI_MENIT' in df_master.columns:
+        durasi_agg = df_master.dropna(subset=['DURASI_MENIT']).groupby(['NOPIN', 'NO_PLAT'])['DURASI_MENIT'].mean().reset_index()
+        durasi_agg.columns = ['NOPIN', 'NO_PLAT', 'Rata_Durasi']
+        df_armada = df_armada.merge(durasi_agg, on=['NOPIN', 'NO_PLAT'], how='left')
     teraktif = df_armada.iloc[0] if not df_armada.empty else None
     tidak_efisien = df_armada[df_armada['Total_Trip'] > 0].iloc[-1] if not df_armada.empty and (df_armada['Total_Trip'] > 0).any() else None
     return df_armada, teraktif, tidak_efisien
@@ -335,6 +342,49 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         'df_kec': df_kec, 'df_type': df_type, 'df_tren': df_tren,
         'col_netto': col_netto, 'skipped': skipped, 'cleaned_count': len(cleaned)
     }
+
+# -------------------------- Clustering K‑Means --------------------------
+def lakukan_clustering(df_armada, n_clusters=3):
+    """
+    Melakukan K‑Means clustering pada data armada berdasarkan fitur:
+    Total_Trip, Total_Tonase, dan (jika tersedia) Rata_Durasi.
+    Mengembalikan DataFrame dengan kolom 'Cluster' serta dict ringkasan.
+    """
+    if df_armada.empty or len(df_armada) < n_clusters:
+        return None, None
+
+    # Pilih fitur numerik
+    fitur_cols = ['Total_Trip', 'Total_Tonase']
+    if 'Rata_Durasi' in df_armada.columns:
+        # hanya ambil data yang memiliki durasi valid
+        mask_dur = df_armada['Rata_Durasi'].notna()
+        df_fitur = df_armada[mask_dur].copy()
+        fitur_cols.append('Rata_Durasi')
+    else:
+        df_fitur = df_armada.copy()
+
+    if df_fitur.empty or len(df_fitur) < n_clusters:
+        return None, None
+
+    X = df_fitur[fitur_cols].values
+
+    # Standardisasi
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # K‑Means
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    df_fitur['Cluster'] = kmeans.fit_predict(X_scaled)
+
+    # Ringkasan per cluster
+    ringkasan = df_fitur.groupby('Cluster').agg(
+        Jumlah_Armada=('NOPIN', 'count'),
+        Rata_Trip=('Total_Trip', 'mean'),
+        Rata_Tonase=('Total_Tonase', 'mean'),
+        Rata_Durasi=('Rata_Durasi', 'mean') if 'Rata_Durasi' in df_fitur.columns else ('Total_Trip', 'mean')
+    ).reset_index()
+
+    return df_fitur, ringkasan
 
 # -------------------------- Ringkasan Eksekutif --------------------------
 def buat_ringkasan_eksekutif(data):
@@ -697,115 +747,143 @@ if st.session_state.hasil is not None:
     cols_ada = ['No'] + [c for c in cols_waktu if c in df_show.columns]
     st.dataframe(df_show[cols_ada], use_container_width=True, hide_index=True)
 
-    # ---------- RINGKASAN KECAMATAN ----------
-    st.subheader("📊 Ringkasan Seluruh Kecamatan")
-    if not df_kec.empty:
-        df_kec = df_kec.sort_values('Total_Ritase', ascending=False)
-        df_kec_disp = df_kec.copy()
-        df_kec_disp.insert(0, 'No', range(1, len(df_kec_disp)+1))
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.dataframe(df_kec_disp.style.format({'Total_Tonase': '{:,.0f}', 'Rata_Durasi_Menit': '{:.1f}'}),
-                         use_container_width=True, hide_index=True)
-        with col2:
-            st.plotly_chart(px.pie(df_kec, names='Kecamatan', values='Total_Ritase', title='Distribusi Trip per Kecamatan', template='plotly_white'), use_container_width=True)
-        fig_ton = px.bar(df_kec, x='Kecamatan', y='Total_Tonase', color='Total_Tonase', color_continuous_scale='Viridis',
-                         title='Total Tonase per Kecamatan', template='plotly_white')
-        fig_ton.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(fig_ton, use_container_width=True)
+    # ---------- TABS ----------
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Ringkasan", "⏱️ Durasi", "📈 Tren", "🔬 Clustering"])
 
-    # ---------- RINGKASAN TYPE ----------
-    st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
-    if not df_type.empty:
-        df_type = df_type.sort_values('Total_Ritase', ascending=False)
-        df_type_disp = df_type.copy()
-        df_type_disp.insert(0, 'No', range(1, len(df_type_disp)+1))
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.dataframe(df_type_disp.style.format({'Total_Tonase': '{:,.0f}', 'Rata_Durasi_Menit': '{:.1f}'}),
-                         use_container_width=True, hide_index=True)
-        with col2:
-            st.plotly_chart(px.pie(df_type, names='TYPE', values='Total_Ritase', title='Distribusi Trip per Type', template='plotly_white'), use_container_width=True)
-        fig_type_bar = px.bar(df_type, x='TYPE', y='Total_Tonase', color='Total_Tonase', color_continuous_scale='Blues',
-                              title='Total Tonase per Type', template='plotly_white')
-        fig_type_bar.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(fig_type_bar, use_container_width=True)
+    with tab1:
+        st.subheader("📊 Ringkasan Seluruh Kecamatan")
+        if not df_kec.empty:
+            df_kec = df_kec.sort_values('Total_Ritase', ascending=False)
+            df_kec_disp = df_kec.copy()
+            df_kec_disp.insert(0, 'No', range(1, len(df_kec_disp)+1))
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.dataframe(df_kec_disp.style.format({'Total_Tonase': '{:,.0f}', 'Rata_Durasi_Menit': '{:.1f}'}),
+                             use_container_width=True, hide_index=True)
+            with col2:
+                st.plotly_chart(px.pie(df_kec, names='Kecamatan', values='Total_Ritase', title='Distribusi Trip per Kecamatan', template='plotly_white'), use_container_width=True)
+            fig_ton = px.bar(df_kec, x='Kecamatan', y='Total_Tonase', color='Total_Tonase', color_continuous_scale='Viridis',
+                             title='Total Tonase per Kecamatan', template='plotly_white')
+            fig_ton.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_ton, use_container_width=True)
 
-    # ---------- ARMADA TERAKTIF & TIDAK EFISIEN ----------
-    st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien")
-    if teraktif is not None:
-        col_a, col_b = st.columns(2)
-        with col_a: st.success(f"**Teraktif:** {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','')}) – {int(teraktif.get('Total_Trip',0))} trip")
-        with col_b:
-            if tidak_efisien is not None: st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','')}) – {int(tidak_efisien.get('Total_Trip',0))} trip")
+        st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
+        if not df_type.empty:
+            df_type = df_type.sort_values('Total_Ritase', ascending=False)
+            df_type_disp = df_type.copy()
+            df_type_disp.insert(0, 'No', range(1, len(df_type_disp)+1))
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.dataframe(df_type_disp.style.format({'Total_Tonase': '{:,.0f}', 'Rata_Durasi_Menit': '{:.1f}'}),
+                             use_container_width=True, hide_index=True)
+            with col2:
+                st.plotly_chart(px.pie(df_type, names='TYPE', values='Total_Ritase', title='Distribusi Trip per Type', template='plotly_white'), use_container_width=True)
+            fig_type_bar = px.bar(df_type, x='TYPE', y='Total_Tonase', color='Total_Tonase', color_continuous_scale='Blues',
+                                  title='Total Tonase per Type', template='plotly_white')
+            fig_type_bar.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_type_bar, use_container_width=True)
 
-    # ---------- ANALISIS WAKTU ----------
-    st.markdown("---")
-    st.header("⏱️ Analisis Waktu Pelayanan (Durasi)")
-    if 'DURASI_MENIT' in df_master.columns and df_master['DURASI_MENIT'].notna().sum() > 0:
-        valid_waktu = df_master['DURASI_MENIT'].notna().sum()
-        col_w1, col_w2, col_w3, col_w4 = st.columns(4)
-        col_w1.metric("Data Waktu Valid", valid_waktu)
-        col_w2.metric("Rata‑rata Durasi", f"{df_master['DURASI_MENIT'].mean():.1f} menit")
-        col_w3.metric("Durasi Minimum", f"{df_master['DURASI_MENIT'].min():.1f} menit")
-        col_w4.metric("Durasi Maksimum", f"{df_master['DURASI_MENIT'].max():.1f} menit")
+        st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien")
+        if teraktif is not None:
+            col_a, col_b = st.columns(2)
+            with col_a: st.success(f"**Teraktif:** {teraktif.get('NOPIN','-')} ({teraktif.get('NO_PLAT','')}) – {int(teraktif.get('Total_Trip',0))} trip")
+            with col_b:
+                if tidak_efisien is not None: st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN','-')} ({tidak_efisien.get('NO_PLAT','')}) – {int(tidak_efisien.get('Total_Trip',0))} trip")
 
-        fig_hist = px.histogram(df_master, x='DURASI_MENIT', nbins=30, title='Distribusi Durasi Pelayanan (menit)', template='plotly_white')
-        st.plotly_chart(fig_hist, use_container_width=True)
-        st.session_state.grafik['hist_durasi'] = fig_hist
+    with tab2:
+        st.header("⏱️ Analisis Waktu Pelayanan (Durasi)")
+        if 'DURASI_MENIT' in df_master.columns and df_master['DURASI_MENIT'].notna().sum() > 0:
+            valid_waktu = df_master['DURASI_MENIT'].notna().sum()
+            col_w1, col_w2, col_w3, col_w4 = st.columns(4)
+            col_w1.metric("Data Waktu Valid", valid_waktu)
+            col_w2.metric("Rata‑rata Durasi", f"{df_master['DURASI_MENIT'].mean():.1f} menit")
+            col_w3.metric("Durasi Minimum", f"{df_master['DURASI_MENIT'].min():.1f} menit")
+            col_w4.metric("Durasi Maksimum", f"{df_master['DURASI_MENIT'].max():.1f} menit")
 
-        if not df_kec.empty and 'Rata_Durasi_Menit' in df_kec.columns:
-            fig_durasi_kec = px.bar(df_kec.dropna(subset=['Rata_Durasi_Menit']), x='Kecamatan', y='Rata_Durasi_Menit',
-                                    color='Rata_Durasi_Menit', color_continuous_scale='Blues',
-                                    title='Rata‑rata Durasi per Kecamatan', template='plotly_white')
-            st.plotly_chart(fig_durasi_kec, use_container_width=True)
-            st.session_state.grafik['durasi_kec'] = fig_durasi_kec
+            fig_hist = px.histogram(df_master, x='DURASI_MENIT', nbins=30, title='Distribusi Durasi Pelayanan (menit)', template='plotly_white')
+            st.plotly_chart(fig_hist, use_container_width=True)
+            st.session_state.grafik['hist_durasi'] = fig_hist
 
-        if not df_waktu_jenis.empty:
-            fig_durasi_type = px.bar(df_waktu_jenis, x='Jenis Armada', y='Rata2 Waktu Tempuh (menit)',
-                                     color='Rata2 Waktu Tempuh (menit)', color_continuous_scale='Teal',
-                                     title='Rata‑rata Waktu Tempuh per Jenis Armada', template='plotly_white')
-            st.plotly_chart(fig_durasi_type, use_container_width=True)
-            st.session_state.grafik['durasi_type'] = fig_durasi_type
+            if not df_kec.empty and 'Rata_Durasi_Menit' in df_kec.columns:
+                fig_durasi_kec = px.bar(df_kec.dropna(subset=['Rata_Durasi_Menit']), x='Kecamatan', y='Rata_Durasi_Menit',
+                                        color='Rata_Durasi_Menit', color_continuous_scale='Blues',
+                                        title='Rata‑rata Durasi per Kecamatan', template='plotly_white')
+                st.plotly_chart(fig_durasi_kec, use_container_width=True)
+                st.session_state.grafik['durasi_kec'] = fig_durasi_kec
 
-    # ---------- TREN HARIAN ----------
-    st.markdown("---")
-    st.subheader("📈 Tren Harian Ritase 30 Hari")
-    if not df_tren.empty:
-        df_tren['TANGGAL'] = pd.to_datetime(df_tren['TANGGAL'])
-        df_tren = df_tren.sort_values('TANGGAL')
-        max_row = df_tren.loc[df_tren['Total_Ritase'].idxmax()]
+            if not df_waktu_jenis.empty:
+                fig_durasi_type = px.bar(df_waktu_jenis, x='Jenis Armada', y='Rata2 Waktu Tempuh (menit)',
+                                         color='Rata2 Waktu Tempuh (menit)', color_continuous_scale='Teal',
+                                         title='Rata‑rata Waktu Tempuh per Jenis Armada', template='plotly_white')
+                st.plotly_chart(fig_durasi_type, use_container_width=True)
+                st.session_state.grafik['durasi_type'] = fig_durasi_type
 
-        fig_tren = px.line(
-            df_tren,
-            x='TANGGAL',
-            y='Total_Ritase',
-            markers=True,
-            title='Tren Frekuensi Ritase Harian (Juni 2026)',
-            template='plotly_white'
-        )
-        fig_tren.update_traces(
-            line=dict(color='#0D9488', width=3),
-            marker=dict(size=8, color='#0D9488', line=dict(width=1, color='white')),
-            hovertemplate='<b>Tanggal:</b> %{x|%d %B %Y}<br><b>Ritase:</b> %{y} trip<extra></extra>'
-        )
-        fig_tren.add_annotation(
-            x=max_row['TANGGAL'],
-            y=max_row['Total_Ritase'],
-            text=f"Puncak: {int(max_row['Total_Ritase'])} trip",
-            showarrow=True, arrowhead=2, arrowsize=1, arrowcolor='#0D9488', ax=0, ay=-30,
-            font=dict(color='#0D9488', size=10)
-        )
-        fig_tren.update_layout(
-            xaxis_title='Tanggal',
-            yaxis_title='Total Trip (Ritase)',
-            hovermode='x unified',
-            xaxis=dict(tickformat='%d %b', tickangle=-45, dtick='D1', tickmode='linear'),
-            margin=dict(l=40, r=40, t=60, b=60)
-        )
-        st.plotly_chart(fig_tren, use_container_width=True)
+    with tab3:
+        st.subheader("📈 Tren Harian Ritase 30 Hari")
+        if not df_tren.empty:
+            df_tren['TANGGAL'] = pd.to_datetime(df_tren['TANGGAL'])
+            df_tren = df_tren.sort_values('TANGGAL')
+            max_row = df_tren.loc[df_tren['Total_Ritase'].idxmax()]
+            fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase', markers=True,
+                               title='Tren Frekuensi Ritase Harian (Juni 2026)', template='plotly_white')
+            fig_tren.update_traces(line=dict(color='#0D9488', width=3),
+                                   marker=dict(size=8, color='#0D9488', line=dict(width=1, color='white')),
+                                   hovertemplate='<b>Tanggal:</b> %{x|%d %B %Y}<br><b>Ritase:</b> %{y} trip<extra></extra>')
+            fig_tren.add_annotation(x=max_row['TANGGAL'], y=max_row['Total_Ritase'],
+                                    text=f"Puncak: {int(max_row['Total_Ritase'])} trip",
+                                    showarrow=True, arrowhead=2, arrowsize=1, arrowcolor='#0D9488', ax=0, ay=-30,
+                                    font=dict(color='#0D9488', size=10))
+            fig_tren.update_layout(xaxis_title='Tanggal', yaxis_title='Total Trip (Ritase)', hovermode='x unified',
+                                   xaxis=dict(tickformat='%d %b', tickangle=-45, dtick='D1', tickmode='linear'),
+                                   margin=dict(l=40, r=40, t=60, b=60))
+            st.plotly_chart(fig_tren, use_container_width=True)
+            st.session_state.grafik['tren'] = fig_tren
 
-    st.session_state.grafik['tren'] = fig_tren
+    with tab4:
+        st.header("🔬 Cluster Analysis (K‑Means)")
+        st.markdown("Analisis pengelompokan armada berdasarkan **Total Trip**, **Total Tonase**, dan **Rata‑rata Durasi** (jika tersedia).")
+        n_clusters = st.slider("Jumlah Cluster", min_value=2, max_value=5, value=3, key="n_cluster")
+        df_cluster, ringkasan_cluster = lakukan_clustering(df_armada, n_clusters=n_clusters)
+
+        if df_cluster is not None and ringkasan_cluster is not None:
+            # Scatter plot
+            fig_cluster = px.scatter(df_cluster, x='Total_Trip', y='Total_Tonase', color='Cluster',
+                                     symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
+                                     title='Clustering Armada Berdasarkan Trip & Tonase',
+                                     template='plotly_white')
+            if 'Rata_Durasi' in df_cluster.columns:
+                fig_cluster_dur = px.scatter(df_cluster, x='Total_Trip', y='Rata_Durasi', color='Cluster',
+                                             symbol='Cluster', hover_data=['NOPIN', 'NO_PLAT', 'Kecamatan'],
+                                             title='Clustering Armada Berdasarkan Trip & Durasi',
+                                             template='plotly_white')
+                st.plotly_chart(fig_cluster_dur, use_container_width=True)
+
+            st.plotly_chart(fig_cluster, use_container_width=True)
+
+            # Tabel ringkasan
+            st.subheader("📊 Ringkasan per Cluster")
+            ringkasan_disp = ringkasan_cluster.copy()
+            ringkasan_disp.insert(0, 'Cluster', ringkasan_disp['Cluster'].astype(str))
+            # hilangkan duplikasi kolom
+            if 'Cluster' in ringkasan_disp.columns:
+                ringkasan_disp = ringkasan_disp.rename(columns={'Cluster': 'Cluster'})
+            st.dataframe(ringkasan_disp.style.format({
+                'Rata_Trip': '{:.1f}',
+                'Rata_Tonase': '{:,.0f}',
+                'Rata_Durasi': '{:.1f}'
+            }), use_container_width=True, hide_index=True)
+
+            # Anggota per cluster (tabel expander)
+            with st.expander("📋 Lihat Anggota per Cluster"):
+                cluster_list = sorted(df_cluster['Cluster'].unique())
+                for c in cluster_list:
+                    anggota = df_cluster[df_cluster['Cluster'] == c][['NOPIN', 'NO_PLAT', 'Total_Trip', 'Total_Tonase', 'Rata_Durasi']]
+                    st.write(f"**Cluster {c}** ({len(anggota)} armada)")
+                    st.dataframe(anggota, use_container_width=True)
+        else:
+            st.warning("Data tidak mencukupi untuk clustering (periksa apakah data durasi tersedia atau jumlah armada mencukupi).")
+
+    # ---------- SIMPAN GRAFIK LAIN UNTUK PDF ----------
     st.session_state.grafik['kec_ton'] = fig_ton
     st.session_state.grafik['type_bar'] = fig_type_bar
     st.session_state.grafik['type_pie'] = px.pie(df_type, names='TYPE', values='Total_Ritase', template='plotly_white') if not df_type.empty else None
