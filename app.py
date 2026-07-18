@@ -19,7 +19,7 @@ def normalisasi_nopin(val):
     return re.sub(r'[^A-Z0-9]', '', str(val).upper())
 
 def normalisasi_kecamatan(val):
-    """Bersihkan dan standarkan nama kecamatan, termasuk 'Batam Kota'."""
+    """Standarkan nama kecamatan, termasuk 'Batam Kota'."""
     if pd.isna(val) or str(val).strip() == '':
         return 'Tidak Diketahui'
     val = str(val).strip()
@@ -88,7 +88,6 @@ def proses_list_armada(sheets_dict, armada_sheet, config):
     if col_nopin_arm and col_plat_arm:
         df_ref['NOPIN_NORM'] = df_ref[col_nopin_arm].apply(normalisasi_nopin)
         df_ref['NO.PLAT'] = df_ref[col_plat_arm].astype(str).str.strip().str.upper()
-        # Bangun dictionary referensi
         for _, row in df_ref.iterrows():
             key = row['NOPIN_NORM']
             ref_dict[key] = {'NO.PLAT': row['NO.PLAT']}
@@ -128,7 +127,6 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     df_hari = df_hari.rename(columns={col_nopin_day: 'NOPIN', col_plat_day: 'NO_PLAT'})
 
-    # Pembersihan
     df_hari = df_hari.dropna(subset=['NOPIN'])
     df_hari['NOPIN'] = df_hari['NOPIN'].astype(str).str.strip().str.upper()
     df_hari = df_hari[~df_hari['NOPIN'].str.contains('TOTAL|GORO|JUMLAH|KETERANGAN|NAN|COLUMN', na=False)]
@@ -138,7 +136,6 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
 
     no_plat_asli = df_hari['NO_PLAT'].copy() if 'NO_PLAT' in df_hari.columns else pd.Series('', index=df_hari.index)
 
-    # Sinkronisasi dengan master
     if ref_df is not None and not ref_df.empty:
         for col in ['NO_PLAT', 'Kecamatan', 'MERK', 'TYPE']:
             if col in df_hari.columns:
@@ -155,7 +152,6 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
             if col not in df_hari.columns:
                 df_hari[col] = ''
 
-    # Normalisasi dan isi kecamatan
     if 'Kecamatan' in df_hari.columns:
         df_hari['Kecamatan'] = df_hari['Kecamatan'].apply(normalisasi_kecamatan)
     else:
@@ -263,19 +259,16 @@ def proses_data(sheets_dict, config):
 
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
-    # --- PEMBERSIHAN DUPLIKAT (termasuk "Batam Kota") ---
-    # Normalisasi ulang kecamatan untuk jaga-jaga
+    # Normalisasi ulang kecamatan (jaga-jaga)
     if 'Kecamatan' in df_master.columns:
         df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
 
-    # Tentukan kolom kunci untuk identifikasi duplikat
+    # Hapus duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
         key_cols.append(ton_col)
-    # Hapus duplikat
     df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
-    # ------------------------------------------------------
 
     if ton_col:
         df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
@@ -452,7 +445,7 @@ if "grafik" not in st.session_state:
 # -------------------------- ANTARMUKA STREAMLIT --------------------------
 st.set_page_config(page_title="Dashboard DLH Armada", page_icon="🚛", layout="wide")
 st.title("🚛 Dashboard Analitik Armada – DLH Kota Batam")
-st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Duplikasi data (termasuk varian 'Batam Kota') akan dibersihkan otomatis.")
+st.markdown("Unggah file Excel, lalu pilih mode **Otomatis** atau **Manual**. Semua analisis, termasuk per kecamatan, akan ditampilkan secara otomatis. Duplikasi data (termasuk varian 'Batam Kota') dibersihkan.")
 
 with st.sidebar:
     uploaded_file = st.file_uploader("📂 Unggah file Excel (.xls/.xlsx)", type=["xlsx", "xls"])
@@ -523,7 +516,7 @@ with st.sidebar:
                     st.error("Gagal memproses data. Periksa sheet/kolom yang dipilih.")
                 else:
                     st.session_state.hasil = hasil
-                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil digabung. Duplikat telah dibersihkan, termasuk varian 'Batam Kota'.")
+                    st.success(f"✅ {hasil['cleaned_count']} sheet berhasil digabung. Duplikat dibersihkan, semua kecamatan terbaca.")
                     st.balloons()
 
 # Tampilkan hasil
@@ -539,10 +532,10 @@ if st.session_state.hasil is not None:
     df_waktu_jenis = data['df_waktu_jenis']
     df_tren = data['df_tren']
 
+    # ---- ANALISIS PER KECAMATAN ----
     st.sidebar.markdown("---")
     st.sidebar.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
-        # Semua kecamatan ditampilkan, termasuk "Tidak Diketahui" dan "Batam Kota"
         daftar_kec = sorted(df_master['Kecamatan'].unique().tolist())
         kec_terpilih = st.sidebar.selectbox("Pilih Kecamatan", daftar_kec)
         df_kec_filter = df_master[df_master['Kecamatan'] == kec_terpilih]
@@ -550,6 +543,7 @@ if st.session_state.hasil is not None:
         kec_terpilih = None
         df_kec_filter = df_master
 
+    # Statistik Kecamatan Terpilih
     st.subheader(f"📌 Statistik Kecamatan: **{kec_terpilih}**")
     total_trip_kec = len(df_kec_filter)
     total_armada_kec = df_kec_filter['NOPIN'].nunique()
@@ -562,6 +556,7 @@ if st.session_state.hasil is not None:
     colC.metric("Total Tonase (Ton)", f"{total_tonase_kec:,.1f}")
     colD.metric("Rata² Durasi (menit)", f"{durasi_rata_kec:.1f}" if durasi_rata_kec else "-")
 
+    # Daftar Armada di Kecamatan
     st.subheader(f"🚚 Daftar Armada di {kec_terpilih}")
     if col_netto:
         armada_kec = df_kec_filter.groupby(['NOPIN', 'NO_PLAT'], dropna=False).agg(
@@ -577,6 +572,7 @@ if st.session_state.hasil is not None:
 
     st.markdown("---")
 
+    # ---- RINGKASAN SELURUH KECAMATAN ----
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
@@ -591,6 +587,7 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
+    # ---- ANALISIS PER TYPE ----
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
         col1, col2 = st.columns([2, 1])
@@ -605,6 +602,7 @@ if st.session_state.hasil is not None:
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
 
+    # ---- TREN HARIAN ----
     if not df_tren.empty:
         st.subheader("📈 Tren Harian (Semua Kecamatan)")
         fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase',
@@ -612,6 +610,7 @@ if st.session_state.hasil is not None:
         fig_tren.update_traces(line_color='#0D9488')
         st.plotly_chart(fig_tren, use_container_width=True)
 
+    # ---- ARMADA TERAKTIF & TIDAK EFISIEN ----
     st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien (Keseluruhan)")
     if teraktif is not None:
         col_a, col_b = st.columns(2)
@@ -621,6 +620,7 @@ if st.session_state.hasil is not None:
             if tidak_efisien is not None:
                 st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN', '-')} ({tidak_efisien.get('NO_PLAT', '')}) – {int(tidak_efisien.get('Total_Trip', 0))} trip")
 
+    # ---- WAKTU TEMPUH PER JENIS ----
     if not df_waktu_jenis.empty:
         st.subheader("⏱️ Rata‑rata Waktu Tempuh per Jenis Armada")
         st.dataframe(df_waktu_jenis.style.format({'Rata2 Waktu Tempuh (menit)': '{:.1f}'}))
@@ -637,13 +637,13 @@ if st.session_state.hasil is not None:
     if 'hist_durasi' in locals():
         st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Ringkasan Eksekutif
+    # ---- RINGKASAN EKSEKUTIF (POIN 7.0) ----
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
     ringkasan_teks = buat_ringkasan_eksekutif(data)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
-    # PDF
+    # ---- PDF REPORT ----
     st.subheader("📑 Laporan PDF Lengkap dengan Rekomendasi")
     if st.button("📥 Buat Laporan PDF"):
         with st.spinner("Membuat PDF..."):
@@ -655,7 +655,7 @@ if st.session_state.hasil is not None:
                 mime="application/pdf"
             )
 
-    # Unduhan
+    # ---- UNDUHAN DATA ----
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
