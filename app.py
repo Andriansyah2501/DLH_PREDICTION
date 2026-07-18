@@ -627,6 +627,80 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     buffer.seek(0)
     return buffer
 
+# -------------------------- Generate PDF per Kecamatan (TAMBAHAN BARU) --------------------------
+def generate_pdf_per_kecamatan(kec_data, grafik_dict):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    story = []
+
+    PRIMARY = colors.HexColor("#1E3A8A")
+    SECONDARY = colors.HexColor("#0D9488")
+    TEXT_DARK = colors.HexColor("#1F2937")
+
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, textColor=PRIMARY, alignment=1, spaceAfter=12)
+    heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=14, textColor=PRIMARY, spaceBefore=12, spaceAfter=6)
+    normal_style = styles['Normal']
+
+    kec_name = kec_data['kecamatan']
+    total_trip = kec_data['total_trip']
+    total_armada = kec_data['total_armada']
+    total_tonase = kec_data['total_tonase']
+    durasi_rata = kec_data.get('durasi_rata', 0)
+    armada_teraktif = kec_data.get('armada_teraktif')
+    list_armada = kec_data['armada_list']
+
+    story.append(Paragraph(f"Laporan Analisis Kecamatan {kec_name}", title_style))
+    story.append(Paragraph(f"Periode: Juni 2026", normal_style))
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Ringkasan Operasional", heading_style))
+    ringkasan = [
+        f"Total trip: {total_trip}",
+        f"Armada aktif: {total_armada} unit",
+        f"Total tonase: {total_tonase:,.1f} Ton",
+        f"Rata-rata durasi: {durasi_rata:.1f} menit",
+    ]
+    if armada_teraktif:
+        ringkasan.append(f"Armada teraktif: {armada_teraktif[0]} ({armada_teraktif[1]}) - {armada_teraktif[2]} trip")
+    for item in ringkasan:
+        story.append(Paragraph(item, normal_style))
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Daftar Armada di Kecamatan", heading_style))
+    if not list_armada.empty:
+        table_data = [['No. Pintu', 'No. Plat', 'Total Trip', 'Total Tonase (Kg)']]
+        for _, row in list_armada.head(10).iterrows():
+            table_data.append([str(row['NOPIN']), str(row['NO_PLAT']), str(row['Total_Trip']), f"{row['Total_Tonase']:,.0f}"])
+        t = Table(table_data, colWidths=[80, 100, 80, 100])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), PRIMARY),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+        ]))
+        story.append(t)
+    story.append(Spacer(1, 12))
+
+    if 'top_kec' in grafik_dict and grafik_dict['top_kec'] is not None:
+        story.append(Paragraph("Visualisasi Armada Teraktif", heading_style))
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            fig = grafik_dict['top_kec']
+            fig.update_layout(template='plotly_white', paper_bgcolor='white', plot_bgcolor='white')
+            pio.write_image(fig, tmp.name, format='png', width=500, height=300, scale=2)
+            story.append(Image(tmp.name, width=450, height=250))
+            story.append(Spacer(1, 12))
+            os.unlink(tmp.name)
+
+    story.append(Paragraph("Rekomendasi", heading_style))
+    rekom = f"Berdasarkan data, armada dengan trip rendah perlu dievaluasi. Optimasi rute di kecamatan {kec_name} dapat meningkatkan efisiensi."
+    story.append(Paragraph(rekom, normal_style))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # -------------------------- SESSION STATE --------------------------
 if "hasil" not in st.session_state: st.session_state.hasil = None
 if "sheets" not in st.session_state: st.session_state.sheets = None
@@ -970,7 +1044,7 @@ if st.session_state.hasil is not None:
     st.session_state.grafik['type_bar'] = fig_type_bar
     st.session_state.grafik['type_pie'] = px.pie(df_type, names='TYPE', values='Total_Ritase', template='plotly_white') if not df_type.empty else None
 
-    # ---------- PER KECAMATAN ----------
+    # ---------- PER KECAMATAN (dengan PDF per kecamatan) ----------
     st.markdown("---")
     st.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
@@ -990,14 +1064,35 @@ if st.session_state.hasil is not None:
         colD.metric("Rata² Durasi (menit)", f"{durasi_rata_kec:.1f}" if durasi_rata_kec else "-")
 
         st.subheader(f"🚚 Daftar Armada di {kec_terpilih}")
+        armada_kec = pd.DataFrame()
         if col_netto:
             armada_kec = df_kec_filter.groupby(['NOPIN', 'NO_PLAT'], dropna=False).agg(
                 Total_Trip=('NOPIN', 'count'), Total_Tonase=(col_netto, 'sum')
             ).reset_index().sort_values('Total_Trip', ascending=False)
             armada_kec.insert(0, 'No', range(1, len(armada_kec)+1))
             st.dataframe(armada_kec.style.format({'Total_Tonase': '{:,.0f}'}), use_container_width=True, hide_index=True)
-            st.plotly_chart(px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip', color='Total_Trip', color_continuous_scale='Blues',
-                                   title=f'10 Armada Teraktif di {kec_terpilih}', template='plotly_white'), use_container_width=True)
+            fig_top_kec = px.bar(armada_kec.head(10), x='NOPIN', y='Total_Trip', color='Total_Trip', color_continuous_scale='Blues',
+                                   title=f'10 Armada Teraktif di {kec_terpilih}', template='plotly_white')
+            st.plotly_chart(fig_top_kec, use_container_width=True)
+            st.session_state.grafik['top_kec'] = fig_top_kec
+        else:
+            st.session_state.grafik['top_kec'] = None
+
+        # Tombol PDF per kecamatan
+        if not armada_kec.empty:
+            if st.button("📥 Buat Laporan PDF Kecamatan", key=f"pdf_kec_{kec_terpilih}"):
+                armada_teraktif_kec = (armada_kec.iloc[0]['NOPIN'], armada_kec.iloc[0]['NO_PLAT'], int(armada_kec.iloc[0]['Total_Trip']))
+                kec_data = {
+                    'kecamatan': kec_terpilih,
+                    'total_trip': total_trip_kec,
+                    'total_armada': total_armada_kec,
+                    'total_tonase': total_tonase_kec,
+                    'durasi_rata': durasi_rata_kec,
+                    'armada_teraktif': armada_teraktif_kec,
+                    'armada_list': armada_kec
+                }
+                pdf_buffer = generate_pdf_per_kecamatan(kec_data, st.session_state.grafik)
+                st.download_button(label="⬇️ Unduh Laporan PDF Kecamatan", data=pdf_buffer, file_name=f"Laporan_{kec_terpilih}.pdf", mime="application/pdf")
 
     # ---------- RINGKASAN EKSEKUTIF ----------
     st.markdown("---")
