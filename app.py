@@ -103,7 +103,6 @@ def hitung_durasi(df_master):
 
 # -------------------------- Proses Data Utama --------------------------
 def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
-    """Menggabungkan logika dari kode asli dan dashboard."""
     if use_master and master_sheet:
         if master_sheet not in sheets_dict: return None
         df_master = sheets_dict[master_sheet].copy()
@@ -124,10 +123,14 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         df_master['NOPIN'] = df_master['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
         if 'Kecamatan' in df_master.columns: df_master['Kecamatan'] = df_master['Kecamatan'].apply(normalisasi_kecamatan)
         else: df_master['Kecamatan'] = 'Tidak Diketahui'
+        # Pastikan TANGGAL ada
+        if 'TANGGAL' not in df_master.columns: df_master['TANGGAL'] = ''
+        # Hapus duplikat hanya jika kolom tersedia
         key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
         ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
         if ton_col: key_cols.append(ton_col)
-        df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
+        available_keys = [c for c in key_cols if c in df_master.columns]
+        if available_keys: df_master.drop_duplicates(subset=available_keys, keep='first', inplace=True)
         if ton_col: df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
         col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
         df_master = hitung_durasi(df_master)
@@ -143,12 +146,21 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         df_arm = sheets_dict[armada_sheet].copy()
         header_arm = 1
         try:
-            xls = pd.ExcelFile(uploaded_file)
-            df_ref = pd.read_excel(xls, sheet_name=armada_sheet, header=header_arm)
+            # Gunakan uploaded_file dari session state
+            if 'uploaded_file' in st.session_state and st.session_state.uploaded_file:
+                xls = pd.ExcelFile(st.session_state.uploaded_file)
+                df_ref = pd.read_excel(xls, sheet_name=armada_sheet, header=header_arm)
+            else:
+                raise FileNotFoundError
         except:
-            # fallback jika tidak bisa baca ulang
+            # fallback: ambil dari sheets_dict
             df_ref = df_arm.iloc[header_arm:].reset_index(drop=True)
-            df_ref.columns = df_arm.iloc[header_arm-1].astype(str).str.strip().str.upper() if header_arm > 0 else [str(c).strip().upper() for c in df_arm.iloc[0]]
+            if header_arm > 0:
+                header_row = df_arm.iloc[header_arm-1].astype(str).str.strip().str.upper()
+                df_ref.columns = [str(c).strip().upper() for c in header_row]
+            else:
+                df_ref.columns = [str(c).strip().upper() for c in df_arm.iloc[0]]
+
         df_ref.columns = [str(c).strip().upper() for c in df_ref.columns]
         col_nopin = cari_kolom(df_ref.columns, ['NOPIN', 'PINTU'])
         col_plat = cari_kolom(df_ref.columns, ['PLAT', 'NOPOL'])
@@ -194,7 +206,7 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
         df_hari['NOPIN'] = df_hari['NOPIN'].apply(lambda x: x[:-2] if x.endswith('.0') else x)
         df_hari = df_hari.reset_index(drop=True)
 
-        # Sinkronisasi dengan master (ganti apply dengan merge)
+        # Sinkronisasi dengan master
         if ref_dict:
             ref_df = pd.DataFrame.from_dict(ref_dict, orient='index').reset_index().rename(columns={'index': 'NOPIN'})
             cols_ref = ['NOPIN', 'NO.PLAT']
@@ -212,6 +224,7 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
             df_hari['Kecamatan'] = df_hari['Kecamatan'].apply(normalisasi_kecamatan)
         else: df_hari['Kecamatan'] = 'Tidak Diketahui'
 
+        # Tanggal
         try: tgl = f"2026-06-{int(sheet):02d}"
         except: tgl = sheet
         df_hari['TANGGAL'] = tgl
@@ -221,10 +234,18 @@ def proses_data(sheets_dict, config, use_master=False, master_sheet=None):
     if not cleaned_sheets: return None
 
     df_master = pd.concat(cleaned_sheets.values(), ignore_index=True, sort=False)
+
+    # Pastikan kolom kunci ada
+    if 'Kecamatan' not in df_master.columns: df_master['Kecamatan'] = 'Tidak Diketahui'
+    if 'TANGGAL' not in df_master.columns: df_master['TANGGAL'] = ''
+
+    # Hapus duplikat dengan subset yang ada
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT', 'Kecamatan']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col: key_cols.append(ton_col)
-    df_master.drop_duplicates(subset=key_cols, keep='first', inplace=True)
+    available_keys = [c for c in key_cols if c in df_master.columns]
+    if available_keys: df_master.drop_duplicates(subset=available_keys, keep='first', inplace=True)
+
     if ton_col: df_master[ton_col] = pd.to_numeric(df_master[ton_col], errors='coerce').fillna(0)
     col_netto = cari_kolom(df_master.columns, ['NETTO']) or ton_col
 
@@ -467,7 +488,7 @@ with st.sidebar:
                     st.success(f"✅ {hasil['cleaned_count']} sheet berhasil diolah. Data waktu + tanggal siap.")
                     st.balloons()
 
-# Tampilkan hasil (sama seperti sebelumnya, tanpa perubahan)
+# Tampilkan hasil
 if st.session_state.hasil is not None:
     data = st.session_state.hasil
     df_master = data['df_master']
