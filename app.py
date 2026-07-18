@@ -740,12 +740,46 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_durasi_type, use_container_width=True)
             st.session_state.grafik['durasi_type'] = fig_durasi_type
 
-    # Tren Harian
+    # ========== TREN HARIAN 30 HARI (PLOT MENARIK) ==========
+    st.markdown("---")
+    st.subheader("📈 Tren Harian Ritase 30 Hari")
     if not df_tren.empty:
-        st.markdown("---")
-        st.subheader("📈 Tren Harian")
-        fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase', title='Tren Frekuensi Ritase Harian', markers=True, template='plotly_white')
-        fig_tren.update_traces(line_color='#0D9488')
+        # Cari hari dengan ritase tertinggi
+        max_row = df_tren.loc[df_tren['Total_Ritase'].idxmax()]
+
+        fig_tren = px.line(
+            df_tren,
+            x='TANGGAL',
+            y='Total_Ritase',
+            markers=True,
+            title='Tren Frekuensi Ritase Harian (Juni 2026)',
+            template='plotly_white'
+        )
+        fig_tren.update_traces(
+            line=dict(color='#0D9488', width=3),
+            marker=dict(size=8, color='#0D9488', line=dict(width=1, color='white')),
+            hovertemplate='<b>Tanggal:</b> %{x}<br><b>Ritase:</b> %{y} trip<extra></extra>'
+        )
+        # Anotasi hari puncak
+        fig_tren.add_annotation(
+            x=max_row['TANGGAL'],
+            y=max_row['Total_Ritase'],
+            text=f"Puncak: {int(max_row['Total_Ritase'])} trip",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowcolor='#0D9488',
+            ax=0,
+            ay=-30,
+            font=dict(color='#0D9488', size=10)
+        )
+        fig_tren.update_layout(
+            xaxis_title='Tanggal',
+            yaxis_title='Total Trip (Ritase)',
+            hovermode='x unified',
+            xaxis=dict(tickformat='%d %b', tickangle=-45),
+            margin=dict(l=40, r=40, t=60, b=40)
+        )
         st.plotly_chart(fig_tren, use_container_width=True)
 
     # Simpan grafik untuk PDF
@@ -785,7 +819,6 @@ if st.session_state.hasil is not None:
     # Ringkasan Eksekutif
     st.markdown("---")
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
-    # Gunakan data yang sudah difilter untuk ringkasan
     data_filtered = {
         'df_master': df_master,
         'col_netto': col_netto,
