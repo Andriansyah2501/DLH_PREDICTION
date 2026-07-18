@@ -146,7 +146,7 @@ def proses_sheet_harian(sheets_dict, sheet, ref_df, config):
         df_hari['Kecamatan'] = df_hari['Kecamatan'].fillna('Tidak Diketahui').replace('', 'Tidak Diketahui')
 
     try:
-        tgl = f"2026-06-{int(sheet):02d}"  # fallback, nanti akan diganti oleh TANGGAL asli jika ada
+        tgl = f"2026-06-{int(sheet):02d}"
     except ValueError:
         tgl = sheet
     df_hari['TANGGAL'] = tgl
@@ -247,7 +247,6 @@ def proses_data(sheets_dict, config):
 
     df_master = pd.concat(cleaned.values(), ignore_index=True, sort=False)
 
-    # Hapus duplikat
     key_cols = ['NOPIN', 'TANGGAL', 'NO_PLAT']
     ton_col = cari_kolom(df_master.columns, ['NETTO', 'GROSS', 'TARE', 'BERAT'])
     if ton_col:
@@ -289,13 +288,11 @@ def buat_ringkasan_eksekutif(data):
     teraktif = data['teraktif']
     tidak_efisien = data['tidak_efisien']
 
-    # Ambil periode dari data
     if 'TANGGAL' in df.columns:
         df['TANGGAL_DT'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
         valid_dates = df['TANGGAL_DT'].dropna()
         if not valid_dates.empty:
-            bulan_tahun = valid_dates.dt.strftime('%B %Y').iloc[0]  # contoh: "June 2026"
-            # Ubah ke bahasa Indonesia jika perlu, atau biarkan saja (bisa ditambahkan mapping)
+            bulan_tahun = valid_dates.dt.strftime('%B %Y').iloc[0]
         else:
             bulan_tahun = "Juni 2026"
     else:
@@ -312,7 +309,6 @@ def buat_ringkasan_eksekutif(data):
         kec_tertinggi = "N/A"
         tonase_tertinggi = 0
 
-    # Cari 5 armada dengan ritase terendah (untuk rekomendasi pemeliharaan)
     if not df_armada.empty:
         terbawah = df_armada.sort_values('Total_Trip', ascending=True).head(5)
         list_terbawah = ", ".join([f"{row['NOPIN']} ({row['NO_PLAT']})" for _, row in terbawah.iterrows()])
@@ -357,18 +353,15 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
     heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor("#1e3c72"), spaceBefore=12, spaceAfter=6)
     normal_style = styles['Normal']
 
-    # Judul
     story.append(Paragraph("Laporan Analisis Armada DLH Kota Batam", title_style))
     story.append(Spacer(1, 12))
 
-    # Ringkasan Eksekutif
     story.append(Paragraph("Ringkasan Eksekutif", heading_style))
     for baris in ringkasan_teks.split('\n'):
         if baris.strip():
             story.append(Paragraph(baris, normal_style))
     story.append(Spacer(1, 12))
 
-    # Tabel per Kecamatan (5 teratas)
     df_kec = data['df_kec']
     if not df_kec.empty:
         story.append(Paragraph("5 Kecamatan dengan Aktivitas Tertinggi", heading_style))
@@ -386,7 +379,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t)
         story.append(Spacer(1, 12))
 
-    # Tabel per Type
     df_type = data['df_type']
     if not df_type.empty:
         story.append(Paragraph("Ringkasan per Jenis Armada", heading_style))
@@ -404,7 +396,6 @@ def generate_pdf_report(data, grafik_dict, ringkasan_teks):
         story.append(t2)
         story.append(Spacer(1, 12))
 
-    # Grafik
     story.append(Paragraph("Visualisasi Data", heading_style))
     for key, fig in grafik_dict.items():
         if fig is not None:
@@ -518,7 +509,6 @@ if st.session_state.hasil is not None:
     df_waktu_jenis = data['df_waktu_jenis']
     df_tren = data['df_tren']
 
-    # Filter Kecamatan
     st.sidebar.markdown("---")
     st.sidebar.header("📍 Analisis per Kecamatan")
     if 'Kecamatan' in df_master.columns:
@@ -556,7 +546,6 @@ if st.session_state.hasil is not None:
 
     st.markdown("---")
 
-    # Ringkasan Seluruh Kecamatan
     st.subheader("📊 Ringkasan Seluruh Kecamatan")
     if not df_kec.empty:
         col1, col2 = st.columns([2, 1])
@@ -571,7 +560,6 @@ if st.session_state.hasil is not None:
         fig_ton.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_ton, use_container_width=True)
 
-    # Analisis per TYPE
     st.subheader("🚛 Analisis per Jenis Armada (TYPE)")
     if not df_type.empty:
         col1, col2 = st.columns([2, 1])
@@ -586,7 +574,6 @@ if st.session_state.hasil is not None:
         fig_type_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_type_bar, use_container_width=True)
 
-    # Tren Harian
     if not df_tren.empty:
         st.subheader("📈 Tren Harian (Semua Kecamatan)")
         fig_tren = px.line(df_tren, x='TANGGAL', y='Total_Ritase',
@@ -594,7 +581,6 @@ if st.session_state.hasil is not None:
         fig_tren.update_traces(line_color='#0D9488')
         st.plotly_chart(fig_tren, use_container_width=True)
 
-    # Armada Teraktif & Tidak Efisien
     st.subheader("🏆 Armada Teraktif & Paling Tidak Efisien (Keseluruhan)")
     if teraktif is not None:
         col_a, col_b = st.columns(2)
@@ -604,7 +590,6 @@ if st.session_state.hasil is not None:
             if tidak_efisien is not None:
                 st.error(f"**Tidak Efisien:** {tidak_efisien.get('NOPIN', '-')} ({tidak_efisien.get('NO_PLAT', '')}) – {int(tidak_efisien.get('Total_Trip', 0))} trip")
 
-    # Waktu Tempuh per Jenis Armada
     if not df_waktu_jenis.empty:
         st.subheader("⏱️ Rata‑rata Waktu Tempuh per Jenis Armada")
         st.dataframe(df_waktu_jenis.style.format({'Rata2 Waktu Tempuh (menit)': '{:.1f}'}))
@@ -613,7 +598,6 @@ if st.session_state.hasil is not None:
             st.plotly_chart(fig_hist, use_container_width=True)
             st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Simpan grafik untuk PDF
     st.session_state.grafik['tren'] = fig_tren
     st.session_state.grafik['kec_ton'] = fig_ton
     st.session_state.grafik['type_bar'] = fig_type_bar
@@ -621,13 +605,11 @@ if st.session_state.hasil is not None:
     if 'hist_durasi' in locals():
         st.session_state.grafik['hist_durasi'] = fig_hist
 
-    # Ringkasan Eksekutif (Poin 7.0)
     st.subheader("📝 Laporan Ringkasan Eksekutif (Poin 7.0)")
     ringkasan_teks = buat_ringkasan_eksekutif(data)
     st.markdown(f"```\n{ringkasan_teks}\n```")
     st.download_button("📄 Unduh Ringkasan Eksekutif (TXT)", ringkasan_teks.encode('utf-8'), "Ringkasan_Eksekutif_Poin7.txt")
 
-    # Tombol PDF
     st.subheader("📑 Laporan PDF Lengkap dengan Rekomendasi")
     if st.button("📥 Buat Laporan PDF"):
         with st.spinner("Membuat PDF..."):
@@ -639,7 +621,6 @@ if st.session_state.hasil is not None:
                 mime="application/pdf"
             )
 
-    # Unduhan Data
     st.subheader("📥 Unduh Data Hasil Analisis")
     @st.cache_data
     def to_excel(dataframe):
